@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     name: Build Rootless deb (arm64e)
 
     steps:
@@ -33,9 +33,18 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          brew update
-          brew install ldid dpkg fakeroot
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential fakeroot rsync curl perl zip git \
+            libxml2 libncurses-dev xz-utils ca-certificates \
+            dpkg-dev libssl-dev zlib1g-dev
+          # Build ldid from source (not in Ubuntu repos)
+          git clone --depth 1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid
+          cd /tmp/ldid && make -j$(nproc) && sudo cp ldid /usr/local/bin/ && sudo chmod +x /usr/local/bin/ldid
+          # Adjust fakeroot to favor sysv
+          sudo update-alternatives --set fakeroot /usr/bin/fakeroot-sysv 2>/dev/null || true
           echo "Dependencies installed"
+          uname -a
 
       - name: Cache Theos + toolchain + SDKs
         id: cache-theos
@@ -43,9 +52,9 @@ jobs:
         with:
           path: |
             ${{ env.THEOS }}
-          key: macos-theos-v7-${{ hashFiles('Makefile') }}
+          key: ubuntu-theos-v8-${{ hashFiles('Makefile') }}
           restore-keys: |
-            macos-theos-v7-
+            ubuntu-theos-v8-
 
       - name: Install Theos
         if: steps.cache-theos.outputs.cache-hit != 'true'
@@ -53,13 +62,14 @@ jobs:
           git clone --recursive https://github.com/theos/theos.git "${THEOS}"
           echo "Cloned theos/theos"
 
-          # Download iOS toolchain (macOS host)
+          # Download iOS toolchain (from L1ghtmann/llvm-project)
           echo "Downloading iOS toolchain..."
+          ARCH=$(uname -m)
           mkdir -p "${THEOS}/toolchain"
-          curl -fsSL "https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-macOS.tar.xz" \
+          curl -fsSL "https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-${ARCH}.tar.xz" \
             | tar -xJvf - -C "${THEOS}/toolchain/"
           echo "Toolchain installed:"
-          ls -la "${THEOS}/toolchain/macosx/iphone/bin/" 2>/dev/null || ls -R "${THEOS}/toolchain/" | head -30
+          ls -la "${THEOS}/toolchain/linux/iphone/bin/" 2>/dev/null || ls -R "${THEOS}/toolchain/" | head -30
 
           # Clone SDKs
           mkdir -p "${THEOS}/sdks"
@@ -78,7 +88,7 @@ jobs:
           echo "=== SDKs ==="
           ls "${THEOS}/sdks"
           echo "=== Toolchain ==="
-          ls "${THEOS}/toolchain/macosx/iphone/bin/" 2>/dev/null || { echo "Toolchain not found!"; find "${THEOS}/toolchain" -name "clang" -type f; }
+          ls "${THEOS}/toolchain/linux/iphone/bin/" 2>/dev/null || { echo "Toolchain not found!"; find "${THEOS}/toolchain" -name "clang" -type f; }
           if [ ! -d "${THEOS}/sdks/iPhoneOS16.5.sdk" ]; then
             echo "::error::iPhoneOS16.5.sdk not found!"
             exit 1
@@ -147,17 +157,16 @@ jobs:
 
             # Count rootless paths (under var/jb/) vs roothide paths
             ROOTLESS_COUNT=$(find . -path "./var/jb/*" 2>/dev/null | wc -l)
-            # Roohide paths: any file NOT under var/jb/ and NOT the var/jb directories themselves
             ROOTHIDE_COUNT=$(find . -not -path './var/*' -not -path './var' -not -path './var/jb/*' -not -path './var/jb' -not -name '.' 2>/dev/null | wc -l)
 
             echo "Rootless paths (var/jb): $ROOTLESS_COUNT"
             echo "Roothide paths (other): $ROOTHIDE_COUNT"
 
             if [ "$ROOTLESS_COUNT" -gt 0 ] && [ "$ROOTHIDE_COUNT" -eq 0 ]; then
-              echo "✅ Package is already rootless"
+              echo "Package is already rootless"
               cp "$deb" "${DEB_REDIST}/${bn%.deb}_rootless_arm64e.deb"
             else
-              echo "⚠️  Package needs rootless conversion, fixing..."
+              echo "Package needs rootless conversion, fixing..."
 
               mkdir -p var/jb
               for dir in Library usr bin etc tmp; do
@@ -185,7 +194,33 @@ jobs:
               FIXED_DEB="${DEB_REDIST}/${bn%.deb}_rootless_arm64e.deb"
               ar r "$FIXED_DEB" debian-binary control.tar.gz data.tar.gz
 
-              echo "✅ Fixed package created: $FIXED_DEB"
+              echo "Fixed package created: $FIXED_DEB"
+            fi
+
+            # Also fix control file to ensure correct Architecture
+            cd "$tmpdir"
+            if [ -f "control.tar.gz" ]; then
+              mkdir -p control_extract
+              cd control_extract
+              tar xzf ../control.tar.gz
+              if [ -f "control" ]; then
+                echo "=== Control file before ==="
+                cat control
+                # Ensure Architecture is iphoneos-arm64e (rootless)
+                if grep -q "^Architecture:.*arm64e" control; then
+                  echo "Architecture already correct"
+                else
+                  sed -i 's/^Architecture:.*/Architecture: iphoneos-arm64e/' control
+                  echo "=== Control file after ==="
+                  cat control
+                  tar czf ../control.tar.gz ./*
+                  cd "$tmpdir"
+                  # Rebuild deb with fixed control
+                  OUTPUT_DEB="${DEB_REDIST}/${bn%.deb}_rootless_arm64e.deb"
+                  ar r "$OUTPUT_DEB" debian-binary control.tar.gz data.tar.gz
+                  echo "Control-fixed package created: $OUTPUT_DEB"
+                fi
+              fi
             fi
 
             cd /
