@@ -4,11 +4,83 @@
 
 @interface PSSpecifier (Private)
 + (id)groupSpecifier;
-+ (id)preferenceSpecifierNamed:(NSString *)name target:(id)target set:(SEL)set get:(SEL)get detail:(Class)detail cell:(PSCellType)cell edit:(SEL)edit;
+// Legacy factory: "cell:" parameter takes a Class (PSSwitchCell.self, PSButtonCell.self, PSTitleValueCell.self etc)
++ (id)preferenceSpecifierNamed:(NSString *)name target:(id)target set:(SEL)set get:(SEL)get detail:(Class)detail cell:(Class)cell edit:(SEL)edit;
+// Modern factory (fallback): "type:" parameter takes PSCellType NSInteger enum
++ (id)preferenceSpecifierNamed:(NSString *)name target:(id)target set:(SEL)set get:(SEL)get detail:(Class)detail type:(NSInteger)type edit:(SEL)edit;
 - (void)setProperty:(id)property forKey:(NSString *)key;
 - (id)propertyForKey:(NSString *)key;
 - (void)setName:(NSString *)name;
 @end
+
+// Build a PSSpecifier using cell Class if available, else fallback to enum "type:" variant.
+static PSSpecifier *MakeSpec(NSString *name, id target, SEL set, SEL get, Class detail,
+                             NSString *cellClassName, NSInteger cellTypeFallback, SEL edit) {
+    Class PSSpecifierCls = NSClassFromString(@"PSSpecifier");
+    if (!PSSpecifierCls) return nil;
+
+    // Legacy factory: preferenceSpecifierNamed:target:set:get:detail:cell:edit:
+    Class cellCls = cellClassName ? NSClassFromString(cellClassName) : Nil;
+    SEL legacy = @selector(preferenceSpecifierNamed:target:set:get:detail:cell:edit:);
+    if (cellCls && [PSSpecifierCls respondsToSelector:legacy]) {
+        NSMethodSignature *sig = [PSSpecifierCls methodSignatureForSelector:legacy];
+        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+        inv.selector = legacy;
+        inv.target = PSSpecifierCls;
+        [inv setArgument:&name atIndex:2];
+        [inv setArgument:&target atIndex:3];
+        [inv setArgument:&set atIndex:4];
+        [inv setArgument:&get atIndex:5];
+        [inv setArgument:&detail atIndex:6];
+        [inv setArgument:&cellCls atIndex:7];
+        [inv setArgument:&edit atIndex:8];
+        [inv invoke];
+        PSSpecifier *result = nil;
+        [inv getReturnValue:&result];
+        if (result) return result;
+    }
+
+    // Modern factory: preferenceSpecifierNamed:target:set:get:detail:type:edit:
+    SEL modern = @selector(preferenceSpecifierNamed:target:set:get:detail:type:edit:);
+    if ([PSSpecifierCls respondsToSelector:modern]) {
+        NSMethodSignature *sig = [PSSpecifierCls methodSignatureForSelector:modern];
+        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+        inv.selector = modern;
+        inv.target = PSSpecifierCls;
+        [inv setArgument:&name atIndex:2];
+        [inv setArgument:&target atIndex:3];
+        [inv setArgument:&set atIndex:4];
+        [inv setArgument:&get atIndex:5];
+        [inv setArgument:&detail atIndex:6];
+        [inv setArgument:&cellTypeFallback atIndex:7];
+        [inv setArgument:&edit atIndex:8];
+        [inv invoke];
+        PSSpecifier *result = nil;
+        [inv getReturnValue:&result];
+        if (result) return result;
+    }
+
+    return nil;
+}
+
+static PSSpecifier *MakeGroupSpec(void) {
+    Class cls = NSClassFromString(@"PSSpecifier");
+    SEL s = @selector(groupSpecifier);
+    if (cls && [cls respondsToSelector:s]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+        return [cls performSelector:s];
+#pragma clang diagnostic pop
+    }
+    return nil;
+}
+
+// PSCellType enum values (fallback for modern factory)
+typedef NS_ENUM(NSInteger, APMPSpecifierCellType) {
+    APMPPSCellTypeSwitch       = 5,
+    APMPPSCellTypeButton       = 6,
+    APMPPSCellTypeTitleValue   = 3,
+};
 
 @interface LSApplicationWorkspace : NSObject
 + (instancetype)defaultWorkspace;
@@ -136,38 +208,40 @@
     NSMutableArray *specs = [NSMutableArray array];
 
     // Section: Enable toggle
-    PSSpecifier *group1 = [PSSpecifier groupSpecifier];
+    PSSpecifier *group1 = MakeGroupSpec();
     [group1 setProperty:@"AirPods Pro/Max 自动切换聆听模式" forKey:@"headerText"];
     [specs addObject:group1];
 
-    PSSpecifier *enableSpec = [PSSpecifier preferenceSpecifierNamed:@"启用插件"
-                                                             target:self
-                                                                set:@selector(setEnabled:specifier:)
-                                                                get:@selector(enabled)
-                                                             detail:Nil
-                                                               cell:PSSwitchCell
-                                                               edit:Nil];
+    PSSpecifier *enableSpec = MakeSpec(@"启用插件",
+                                       self,
+                                       @selector(setEnabled:specifier:),
+                                       @selector(enabled),
+                                       Nil,
+                                       @"PSSwitchCell",
+                                       APMPPSCellTypeSwitch,
+                                       Nil);
     [enableSpec setProperty:@"媒体播放时自动降噪，暂停时自动通透" forKey:@"footerText"];
     [specs addObject:enableSpec];
 
     // Section: Blacklist info + reset
-    PSSpecifier *group2 = [PSSpecifier groupSpecifier];
+    PSSpecifier *group2 = MakeGroupSpec();
     [group2 setProperty:@"黑名单中的 App 不会触发自动切换。默认包含：抖音、抖音极速版、快手。" forKey:@"footerText"];
     [specs addObject:group2];
 
-    PSSpecifier *resetSpec = [PSSpecifier preferenceSpecifierNamed:@"重置黑名单默认值"
-                                                             target:self
-                                                                set:Nil
-                                                                get:Nil
-                                                             detail:Nil
-                                                               cell:PSButtonCell
-                                                               edit:Nil];
+    PSSpecifier *resetSpec = MakeSpec(@"重置黑名单默认值",
+                                      self,
+                                      Nil,
+                                      Nil,
+                                      Nil,
+                                      @"PSButtonCell",
+                                      APMPPSCellTypeButton,
+                                      Nil);
     [resetSpec setProperty:NSStringFromSelector(@selector(resetBlacklist)) forKey:@"action"];
     [resetSpec setProperty:[UIColor systemRedColor] forKey:@"cellTintColor"];
     [specs addObject:resetSpec];
 
     // Section: App list
-    PSSpecifier *group3 = [PSSpecifier groupSpecifier];
+    PSSpecifier *group3 = MakeGroupSpec();
     [group3 setProperty:[NSString stringWithFormat:@"已安装应用（%lu个）。勾选加入黑名单", (unsigned long)self.appList.count] forKey:@"headerText"];
     [specs addObject:group3];
 
@@ -175,13 +249,14 @@
         NSString *bid = app[@"bundleID"];
         NSString *name = app[@"name"];
 
-        PSSpecifier *spec = [PSSpecifier preferenceSpecifierNamed:name
-                                                          target:self
-                                                             set:@selector(setApp:specifier:)
-                                                             get:@selector(appBlacklisted:)
-                                                          detail:Nil
-                                                            cell:PSTitleValueCell
-                                                            edit:Nil];
+        PSSpecifier *spec = MakeSpec(name,
+                                     self,
+                                     @selector(setApp:specifier:),
+                                     @selector(appBlacklisted:),
+                                     Nil,
+                                     @"PSTitleValueCell",
+                                     APMPPSCellTypeTitleValue,
+                                     Nil);
         [spec setProperty:bid forKey:@"bundleID"];
         [spec setProperty:bid forKey:@"key"];
 
