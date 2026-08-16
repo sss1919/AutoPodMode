@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   build-roothide:
-    runs-on: macos-13
+    runs-on: ubuntu-latest
     name: Build Rootless-RootHide deb
 
     steps:
@@ -31,72 +31,95 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - name: Setup macOS environment
+      - name: Install build dependencies (Linux)
         run: |
-          brew install ldid make dpkg fakeroot xz coreutils
-          echo "export PATH=\"$(brew --prefix make)/libexec/gnubin:$PATH\"" >> $GITHUB_ENV
-          echo "export PATH=\"$(brew --prefix coreutils)/libexec/gnubin:$PATH\"" >> $GITHUB_ENV
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential \
+            curl \
+            git \
+            sudo \
+            fakeroot \
+            dpkg-dev \
+            ldid \
+            rsync \
+            perl \
+            python3 \
+            ca-certificates \
+            xz-utils \
+            unzip \
+            zip
+          echo "Dependencies installed"
           uname -a
 
-      - name: Cache Theos + RootHide SDK
+      - name: Cache Theos + SDKs
         id: cache-theos
         uses: actions/cache@v4
         with:
           path: |
             ${{ env.THEOS }}
-            ${{ github.workspace }}/sdks
-            ~/Library/Developer/theos
-          key: ${{ runner.os }}-theos-roothide-v1-${{ hashFiles('Makefile') }}
+          key: ${{ runner.os }}-theos-roothide-v3-${{ hashFiles('Makefile') }}
           restore-keys: |
-            ${{ runner.os }}-theos-roothide-v1-
+            ${{ runner.os }}-theos-roothide-v3-
 
-      - name: Install Theos (roothide fork)
+      - name: Install Theos (roothide fork) + toolchain + SDKs
         if: steps.cache-theos.outputs.cache-hit != 'true'
         run: |
           # Use roothide-dev/Theos for rootless-roothide packaging scheme support
           git clone --recursive --depth 1 https://github.com/roothide-dev/theos.git "${THEOS}"
+          echo "Cloned roothide-dev/Theos"
 
-          # Clone SDKs into theos/sdks (iPhoneOS17.0 SDK required for TARGET)
+          # Theos Linux toolchain (clang for arm64e cross-compilation)
+          # The official install script downloads the toolchain automatically
+          echo "Running Theos bootstrap (downloads Linux toolchain)..."
+          bash "${THEOS}/bin/install-theos.sh" --auto 2>&1 | tail -20 || true
+
+          # Clone SDKs into theos/sdks
           mkdir -p "${THEOS}/sdks"
-          git clone --depth 1 https://github.com/theos/sdks.git /tmp/sdks || true
-          # Copy iPhoneOS SDKs
+          git clone --depth 1 https://github.com/theos/sdks.git /tmp/sdks 2>/dev/null || true
           for sdk in /tmp/sdks/iPhoneOS*.sdk; do
             if [ -d "$sdk" ]; then
               cp -R "$sdk" "${THEOS}/sdks/"
               echo "Copied $(basename $sdk)"
             fi
           done
+          echo "SDKs installed"
+          ls -la "${THEOS}/sdks/"
 
-          # Apply roothide packaging scheme bootstrap
-          if [ -f "${THEOS}/bin/bootstrap.sh" ]; then
-            bash "${THEOS}/bin/bootstrap.sh" || true
-          fi
-
-          echo "Installed Theos fork + SDKs"
-
-      - name: Verify Theos + SDKs
+      - name: Verify Theos + SDKs + toolchain
         run: |
+          echo "=== THEOS dir ==="
           ls -la "${THEOS}"
+          echo "=== SDKs ==="
           ls -la "${THEOS}/sdks" || true
-          [ -d "${THEOS}/sdks/iPhoneOS17.0.sdk" ] && echo "iPhoneOS17.0.sdk OK"
-          [ -d "${THEOS}/sdks/iPhoneOS16.5.sdk" ] && echo "iPhoneOS16.5.sdk OK"
+          echo "=== Toolchain ==="
+          ls -la "${THEOS}/toolchain" 2>/dev/null || true
+          ls "${THEOS}/toolchain/linux/iphone/" 2>/dev/null || true
 
       - name: Build package (rootless + roothide)
         id: build
         working-directory: ${{ github.workspace }}
         run: |
-          export PATH="${THEOS}/bin:$(brew --prefix make)/libexec/gnubin:$PATH"
+          export PATH="${THEOS}/bin:$PATH"
           export THEOS="${THEOS}"
           export THEOS_PACKAGE_SCHEME=rootless
-          export THEOS_PACKAGE_SCHEME_ALT=roothide
 
           echo "=== Build env ==="
           echo "ARCHS=${ARCHS}"
           echo "TARGET=${TARGET}"
           echo "THEOS_PACKAGE_SCHEME=${THEOS_PACKAGE_SCHEME}"
+          echo "THEOS=${THEOS}"
 
-          make clean
+          make clean 2>&1 | tail -5
+          echo "=== Starting package build ==="
           make package FINALPACKAGE=1 STRIP=1 2>&1 | tee build.log
+          BUILD_EXIT=${PIPESTATUS[0]}
+          echo "Build exit code: $BUILD_EXIT"
+
+          if [ $BUILD_EXIT -ne 0 ]; then
+            echo "::error::Build failed with exit code $BUILD_EXIT"
+            exit 1
+          fi
 
           # Collect artifacts
           mkdir -p "${DEB_REDIST}"
@@ -105,16 +128,18 @@ jobs:
           if [ "${#DEBS[@]}" -gt 0 ]; then
             for deb in "${DEBS[@]}"; do
               bn=$(basename "$deb")
-              # Mark filename with rootless-roothide tag
               newname="${bn%.deb}__rootless-roothide.deb"
               cp -v "$deb" "${DEB_REDIST}/${newname}"
             done
           else
             echo "::warning::Expected .deb packages not found in packages/ folder"
+            find . -name "*.deb" -ls
           fi
+          echo "=== Artifacts ==="
           ls -la "${DEB_REDIST}" 2>/dev/null || true
 
       - name: Upload build artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: AutoPodMode-rootless-roothide-deb
@@ -124,15 +149,15 @@ jobs:
           retention-days: 90
           if-no-files-found: warn
 
-      - name: Create Release tag + upload deb
-        if: github.event_name != 'pull_request' && startsWith(github.ref, 'refs/heads/')
+      - name: Create Release + upload deb
+        if: github.event_name != 'pull_request' && startsWith(github.ref, 'refs/heads/') && success()
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: build-${{ github.run_number }}
-          name: Auto build ${{ github.run_number }}
+          tag_name: v1.0.0-${{ github.run_number }}
+          name: AutoPodMode v1.0.0 (Build ${{ github.run_number }})
           generate_release_notes: true
           draft: false
-          prerelease: true
+          prerelease: false
           files: |
             ${{ env.DEB_REDIST }}/*.deb
             build.log
