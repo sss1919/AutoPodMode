@@ -1,4 +1,4 @@
-name: Build AutoPodMode (Rootless + RootHide)
+name: Build AutoPodMode (Rootless)
 
 on:
   push:
@@ -20,9 +20,9 @@ permissions:
   actions: read
 
 jobs:
-  build-roothide:
-    runs-on: ubuntu-latest
-    name: Build Rootless-RootHide deb
+  build:
+    runs-on: macos-13
+    name: Build Rootless deb (arm64e)
 
     steps:
       - name: Checkout repository
@@ -31,35 +31,12 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - name: Install build dependencies (Linux)
+      - name: Install macOS build dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends \
-            build-essential \
-            curl \
-            git \
-            sudo \
-            fakeroot \
-            dpkg-dev \
-            rsync \
-            perl \
-            python3 \
-            ca-certificates \
-            xz-utils \
-            unzip \
-            zip \
-            libplist-dev \
-            libssl-dev \
-            zlib1g-dev
-          # ldid is not in Ubuntu repos; build from source
-          git clone --depth 1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid
-          cd /tmp/ldid
-          make -j$(nproc)
-          sudo cp ldid /usr/local/bin/ldid
-          sudo chmod +x /usr/local/bin/ldid
-          ldid 2>&1 | head -3 || true
-          echo "Dependencies + ldid installed"
+          brew install ldid dpkg fakeroot make coreutils
+          echo "PATH=$(brew --prefix make)/libexec/gnubin:$(brew --prefix coreutils)/libexec/gnubin:$PATH" >> $GITHUB_ENV
           uname -a
+          xcodebuild -version 2>/dev/null || true
 
       - name: Cache Theos + SDKs
         id: cache-theos
@@ -67,27 +44,17 @@ jobs:
         with:
           path: |
             ${{ env.THEOS }}
-          key: ${{ runner.os }}-theos-roothide-v3-${{ hashFiles('Makefile') }}
+          key: ${{ runner.os }}-theos-v5-${{ hashFiles('Makefile') }}
           restore-keys: |
-            ${{ runner.os }}-theos-roothide-v3-
+            ${{ runner.os }}-theos-v5-
 
-      - name: Install Theos + toolchain + SDKs
+      - name: Install Theos + SDKs
         if: steps.cache-theos.outputs.cache-hit != 'true'
         run: |
-          # Use official theos/theos (supports rootless scheme)
           git clone --recursive https://github.com/theos/theos.git "${THEOS}"
           echo "Cloned theos/theos"
 
-          # Download Theos Linux toolchain (prebuilt clang for iOS cross-compilation)
-          echo "Downloading Theos Linux toolchain..."
-          mkdir -p "${THEOS}/toolchain/linux/iphone"
-          # The official toolchain from theos/toolchain releases
-          curl -fsSL "https://github.com/theos/toolchain/releases/latest/download/toolchain_linux_x86_64.tar.xz" -o /tmp/toolchain.tar.xz
-          tar -xf /tmp/toolchain.tar.xz -C "${THEOS}/toolchain/linux/iphone"
-          echo "Toolchain installed"
-          ls -la "${THEOS}/toolchain/linux/iphone/bin/" | head -20
-
-          # Clone SDKs into theos/sdks
+          # Clone SDKs
           mkdir -p "${THEOS}/sdks"
           git clone --depth 1 https://github.com/theos/sdks.git /tmp/sdks
           for sdk in /tmp/sdks/iPhoneOS*.sdk; do
@@ -96,31 +63,25 @@ jobs:
               echo "Copied $(basename $sdk)"
             fi
           done
-          echo "SDKs installed"
+          echo "SDKs installed:"
           ls -la "${THEOS}/sdks/"
 
-      - name: Verify Theos + SDKs + toolchain
+      - name: Verify Theos + SDKs
         run: |
-          echo "=== THEOS dir ==="
-          ls -la "${THEOS}"
           echo "=== SDKs ==="
-          ls -la "${THEOS}/sdks" || true
-          echo "=== Toolchain ==="
-          ls -la "${THEOS}/toolchain" 2>/dev/null || true
-          ls "${THEOS}/toolchain/linux/iphone/" 2>/dev/null || true
-          # Verify required SDK exists
+          ls -la "${THEOS}/sdks"
           if [ ! -d "${THEOS}/sdks/iPhoneOS16.5.sdk" ]; then
-            echo "::error::iPhoneOS16.5.sdk not found! Available SDKs:"
-            ls "${THEOS}/sdks/" 2>/dev/null || echo "No sdks dir"
+            echo "::error::iPhoneOS16.5.sdk not found!"
+            ls "${THEOS}/sdks/"
             exit 1
           fi
-          echo "iPhoneOS16.5.sdk found OK"
+          echo "iPhoneOS16.5.sdk OK"
 
-      - name: Build package (rootless + roothide)
+      - name: Build package (rootless)
         id: build
         working-directory: ${{ github.workspace }}
         run: |
-          export PATH="${THEOS}/bin:$PATH"
+          export PATH="$(brew --prefix make)/libexec/gnubin:$(brew --prefix coreutils)/libexec/gnubin:${THEOS}/bin:$PATH"
           export THEOS="${THEOS}"
           export THEOS_PACKAGE_SCHEME=rootless
 
@@ -128,7 +89,6 @@ jobs:
           echo "ARCHS=${ARCHS}"
           echo "TARGET=${TARGET}"
           echo "THEOS_PACKAGE_SCHEME=${THEOS_PACKAGE_SCHEME}"
-          echo "THEOS=${THEOS}"
 
           make clean 2>&1 | tail -5
           echo "=== Starting package build ==="
@@ -148,21 +108,21 @@ jobs:
           if [ "${#DEBS[@]}" -gt 0 ]; then
             for deb in "${DEBS[@]}"; do
               bn=$(basename "$deb")
-              newname="${bn%.deb}__rootless-roothide.deb"
+              newname="${bn%.deb}_rootless_arm64e.deb"
               cp -v "$deb" "${DEB_REDIST}/${newname}"
             done
           else
-            echo "::warning::Expected .deb packages not found in packages/ folder"
+            echo "::warning::No .deb packages found"
             find . -name "*.deb" -ls
           fi
           echo "=== Artifacts ==="
-          ls -la "${DEB_REDIST}" 2>/dev/null || true
+          ls -la "${DEB_REDIST}"
 
       - name: Upload build artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: AutoPodMode-rootless-roothide-deb
+          name: AutoPodMode-rootless-deb
           path: |
             ${{ env.DEB_REDIST }}/*.deb
             build.log
