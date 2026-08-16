@@ -140,9 +140,9 @@ jobs:
             echo "=== ar contents of $bn ==="
             ls -la
 
-            # Find data archive (could be .gz, .xz, .zst, or uncompressed)
+            # Find data archive (could be .gz, .xz, .zst, .lzma, or uncompressed)
             DATA_ARCHIVE=""
-            for ext in gz xz zst; do
+            for ext in gz xz zst lzma; do
               if [ -f "data.tar.${ext}" ]; then
                 DATA_ARCHIVE="data.tar.${ext}"
                 break
@@ -162,7 +162,7 @@ jobs:
 
             # Find control archive
             CONTROL_ARCHIVE=""
-            for ext in gz xz zst; do
+            for ext in gz xz zst lzma; do
               if [ -f "control.tar.${ext}" ]; then
                 CONTROL_ARCHIVE="control.tar.${ext}"
                 break
@@ -177,10 +177,11 @@ jobs:
             mkdir -p data_extract
             cd data_extract
             case "$DATA_ARCHIVE" in
-              *.gz)  tar xzf "../$DATA_ARCHIVE" ;;
-              *.xz)  tar xJf "../$DATA_ARCHIVE" ;;
-              *.zst) tar --zstd -xf "../$DATA_ARCHIVE" 2>/dev/null || zstd -d "../$DATA_ARCHIVE" -c | tar xf - ;;
-              *)     tar xf "../$DATA_ARCHIVE" ;;
+              *.gz)   tar xzf "../$DATA_ARCHIVE" ;;
+              *.xz)   tar xJf "../$DATA_ARCHIVE" ;;
+              *.zst)  tar --zstd -xf "../$DATA_ARCHIVE" 2>/dev/null || zstd -d "../$DATA_ARCHIVE" -c | tar xf - ;;
+              *.lzma) tar --lzma -xf "../$DATA_ARCHIVE" 2>/dev/null || lzma -d "../$DATA_ARCHIVE" -c | tar xf - ;;
+              *)      tar xf "../$DATA_ARCHIVE" ;;
             esac
 
             echo "=== File paths in $bn ==="
@@ -228,10 +229,11 @@ jobs:
               mkdir -p control_extract
               cd control_extract
               case "$CONTROL_ARCHIVE" in
-                *.gz)  tar xzf "$tmpdir/$CONTROL_ARCHIVE" ;;
-                *.xz)  tar xJf "$tmpdir/$CONTROL_ARCHIVE" ;;
-                *.zst) tar --zstd -xf "$tmpdir/$CONTROL_ARCHIVE" 2>/dev/null || zstd -d "$tmpdir/$CONTROL_ARCHIVE" -c | tar xf - ;;
-                *)     tar xf "$tmpdir/$CONTROL_ARCHIVE" ;;
+                *.gz)   tar xzf "$tmpdir/$CONTROL_ARCHIVE" ;;
+                *.xz)   tar xJf "$tmpdir/$CONTROL_ARCHIVE" ;;
+                *.zst)  tar --zstd -xf "$tmpdir/$CONTROL_ARCHIVE" 2>/dev/null || zstd -d "$tmpdir/$CONTROL_ARCHIVE" -c | tar xf - ;;
+                *.lzma) tar --lzma -xf "$tmpdir/$CONTROL_ARCHIVE" 2>/dev/null || lzma -d "$tmpdir/$CONTROL_ARCHIVE" -c | tar xf - ;;
+                *)      tar xf "$tmpdir/$CONTROL_ARCHIVE" ;;
               esac
               if [ -f "control" ]; then
                 echo "=== Control file before ==="
