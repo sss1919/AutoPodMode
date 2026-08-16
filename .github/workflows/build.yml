@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-13
+    runs-on: ubuntu-latest
     name: Build Rootless deb (arm64e)
 
     steps:
@@ -31,28 +31,42 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - name: Install macOS build dependencies
+      - name: Install build dependencies
         run: |
-          brew install ldid dpkg fakeroot make coreutils
-          echo "PATH=$(brew --prefix make)/libexec/gnubin:$(brew --prefix coreutils)/libexec/gnubin:$PATH" >> $GITHUB_ENV
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential fakeroot rsync curl perl zip git \
+            libxml2 libtinfo5 libtinfo6 xz-utils ca-certificates \
+            dpkg-dev ldid
+          # Adjust fakeroot to favor sysv
+          sudo update-alternatives --set fakeroot /usr/bin/fakeroot-sysv 2>/dev/null || true
+          echo "Dependencies installed"
           uname -a
-          xcodebuild -version 2>/dev/null || true
 
-      - name: Cache Theos + SDKs
+      - name: Cache Theos + toolchain + SDKs
         id: cache-theos
         uses: actions/cache@v4
         with:
           path: |
             ${{ env.THEOS }}
-          key: ${{ runner.os }}-theos-v5-${{ hashFiles('Makefile') }}
+          key: ${{ runner.os }}-theos-v6-${{ hashFiles('Makefile') }}
           restore-keys: |
-            ${{ runner.os }}-theos-v5-
+            ${{ runner.os }}-theos-v6-
 
-      - name: Install Theos + SDKs
+      - name: Install Theos
         if: steps.cache-theos.outputs.cache-hit != 'true'
         run: |
           git clone --recursive https://github.com/theos/theos.git "${THEOS}"
           echo "Cloned theos/theos"
+
+          # Download iOS toolchain (from L1ghtmann/llvm-project)
+          echo "Downloading iOS toolchain..."
+          ARCH=$(uname -m)
+          mkdir -p "${THEOS}/toolchain"
+          curl -fsSL "https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-${ARCH}.tar.xz" \
+            | tar -xJvf - -C "${THEOS}/toolchain/"
+          echo "Toolchain installed:"
+          ls -la "${THEOS}/toolchain/linux/iphone/bin/" 2>/dev/null || ls -R "${THEOS}/toolchain/" | head -30
 
           # Clone SDKs
           mkdir -p "${THEOS}/sdks"
@@ -66,22 +80,23 @@ jobs:
           echo "SDKs installed:"
           ls -la "${THEOS}/sdks/"
 
-      - name: Verify Theos + SDKs
+      - name: Verify Theos + SDKs + toolchain
         run: |
           echo "=== SDKs ==="
-          ls -la "${THEOS}/sdks"
+          ls "${THEOS}/sdks"
+          echo "=== Toolchain ==="
+          ls "${THEOS}/toolchain/linux/iphone/bin/" 2>/dev/null || { echo "Toolchain not found!"; find "${THEOS}/toolchain" -name "clang" -type f; }
           if [ ! -d "${THEOS}/sdks/iPhoneOS16.5.sdk" ]; then
             echo "::error::iPhoneOS16.5.sdk not found!"
-            ls "${THEOS}/sdks/"
             exit 1
           fi
-          echo "iPhoneOS16.5.sdk OK"
+          echo "All verified OK"
 
       - name: Build package (rootless)
         id: build
         working-directory: ${{ github.workspace }}
         run: |
-          export PATH="$(brew --prefix make)/libexec/gnubin:$(brew --prefix coreutils)/libexec/gnubin:${THEOS}/bin:$PATH"
+          export PATH="${THEOS}/bin:$PATH"
           export THEOS="${THEOS}"
           export THEOS_PACKAGE_SCHEME=rootless
 
