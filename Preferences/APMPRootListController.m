@@ -2,6 +2,10 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
+@class PSSwitchCell;
+@class PSButtonCell;
+@class PSTitleValueCell;
+
 @interface PSSpecifier (Private)
 + (id)groupSpecifier;
 + (id)preferenceSpecifierNamed:(NSString *)name target:(id)target set:(SEL)set get:(SEL)get detail:(Class)detail cell:(Class)cell edit:(SEL)edit;
