@@ -2,8 +2,8 @@ Package: com.sss1919.autopodmode
 Name: AutoPodMode
 Depends: mobilesubstrate, preferenceloader
 Architecture: iphoneos-arm64e
-Description: AirPods Pro/Max automatic listening mode switcher based on media playback state
+Description: AirPods Pro/Max 自动切换聆听模式（播放时降噪，暂停时通透）
 Maintainer: sss1919
 Author: sss1919
 Section: Tweaks
-Version: 1.0.2
+Version: 1.0.3

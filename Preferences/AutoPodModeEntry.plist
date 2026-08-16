@@ -5,10 +5,10 @@
 	<key>bundle</key>
 	<string>com.sss1919.autopodmode.prefs</string>
 	<key>cell</key>
-	<string>PSLinkCell</string>
-	<key>isContiguous</key>
-	<true/>
+	<string>PSLinkListCell</string>
 	<key>label</key>
 	<string>AutoPodMode</string>
+	<key>icon</key>
+	<string>icon.png</string>
 </dict>
 </plist>

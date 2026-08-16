@@ -6,14 +6,5 @@
 	<string>APMPRootListController</string>
 	<key>title</key>
 	<string>AutoPodMode</string>
-	<key>items</key>
-	<array>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>footerText</key>
-			<string>AirPods Pro/Max 自动切换聆听模式</string>
-		</dict>
-	</array>
 </dict>
 </plist>

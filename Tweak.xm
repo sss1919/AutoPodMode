@@ -4,404 +4,382 @@
 #import <MediaRemote/MediaRemote.h>
 #import <objc/runtime.h>
 
-// MediaRemote constants (not in public header)
 static NSString *const kMRNowPlayingAppPidKey = @"MRMediaRemoteNowPlayingInfoApplicationIdentifier";
-static NSString *const kMRPlaybackStateKey = @"MRMediaRemoteNowPlayingInfoPlaybackState";
-
-static NSString *const kConfigFileName = @"com.sss1919.autopodmode.config.plist";
+static NSString *const kConfigPath = @"/var/mobile/Library/Preferences/com.sss1919.autopodmode.config.plist";
 static const NSTimeInterval kManualOverrideCooldown = 30.0;
 
-// MRPlaybackState enum
-typedef NS_ENUM(NSInteger, MRPlaybackState) {
-    MRPlaybackStateStopped = 0,
-    MRPlaybackStatePlaying  = 1,
-    MRPlaybackStatePaused   = 2,
+typedef NS_ENUM(NSInteger, APMPMode) {
+    APMPModeNormal = 0,
+    APMPModeANC = 1,
+    APMPModeTransparency = 2
 };
 
-@interface AutoPodModeManager : NSObject
+@interface APMPManager : NSObject
 @property (nonatomic, retain) NSMutableArray<NSString *> *blacklist;
-@property (nonatomic, assign) BOOL tweakEnabled;
-@property (nonatomic, copy) NSString *currentPlayingAppBundleID;
-@property (nonatomic, assign) BOOL isPlaying;
-@property (nonatomic, assign) BOOL lastKnownPlayingState;
-@property (nonatomic, retain) NSDate *lastManualOverrideTime;
-@property (nonatomic, assign) BOOL isDeviceSupported;
-+ (instancetype)sharedInstance;
-- (void)start;
-- (void)loadConfig;
-- (void)saveConfig;
-- (void)checkBluetoothDevice;
-- (void)queryPlaybackStateAndAct;
-- (void)applyListeningMode:(NSInteger)mode;
-- (NSArray<NSString *> *)defaultBlacklist;
+@property (nonatomic, assign) BOOL enabled;
+@property (nonatomic, copy) NSString *nowPlayingBundleID;
+@property (nonatomic, assign) BOOL lastPlaying;
+@property (nonatomic, retain) NSDate *lastManual;
+@property (nonatomic, assign) BOOL deviceOK;
 @end
 
-@implementation AutoPodModeManager
+@implementation APMPManager
 
-+ (instancetype)sharedInstance {
-    static AutoPodModeManager *instance = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        instance = [[AutoPodModeManager alloc] init];
-    });
-    return instance;
++ (instancetype)shared {
+    static APMPManager *inst = nil;
+    static dispatch_once_t t;
+    dispatch_once(&t, ^{ inst = [[APMPManager alloc] init]; });
+    return inst;
 }
 
 - (instancetype)init {
-    self = [super init];
-    if (self) {
-        _tweakEnabled = YES;
-        _isPlaying = NO;
-        _lastKnownPlayingState = NO;
-        _lastManualOverrideTime = nil;
-        _isDeviceSupported = NO;
-        _blacklist = [[self defaultBlacklist] mutableCopy];
+    if ((self = [super init])) {
+        _enabled = YES;
+        _lastPlaying = NO;
+        _deviceOK = NO;
+        _blacklist = [@[@"com.ss.iphone.ugc.Aweme",
+                        @"com.ss.iphone.ugc.Aweme.lite",
+                        @"com.smile.gifmaker"] mutableCopy];
     }
     return self;
 }
 
-- (NSArray<NSString *> *)defaultBlacklist {
-    return @[
-        @"com.ss.iphone.ugc.Aweme",
-        @"com.ss.iphone.ugc.Aweme.lite",
-        @"com.smile.gifmaker"
-    ];
-}
-
 #pragma mark - Config
 
-- (NSString *)configPath {
-    return @"/var/mobile/Library/Preferences/com.sss1919.autopodmode.config.plist";
-}
-
 - (void)loadConfig {
-    NSDictionary *config = [NSDictionary dictionaryWithContentsOfFile:[self configPath]];
-    if (config) {
-        NSNumber *en = config[@"enabled"];
-        if (en) _tweakEnabled = [en boolValue];
-        NSArray *list = config[@"blacklist"];
-        if (list && [list isKindOfClass:[NSArray class]]) {
-            NSMutableArray *valid = [NSMutableArray array];
-            for (id item in list) {
-                if ([item isKindOfClass:[NSString class]]) [valid addObject:item];
-            }
-            _blacklist = valid;
+    @try {
+        NSDictionary *c = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
+        if (!c) { [self saveConfig]; return; }
+        NSNumber *e = c[@"enabled"];
+        if (e) _enabled = e.boolValue;
+        NSArray *l = c[@"blacklist"];
+        if ([l isKindOfClass:[NSArray class]]) {
+            NSMutableArray *v = [NSMutableArray array];
+            for (id i in l) if ([i isKindOfClass:[NSString class]]) [v addObject:i];
+            _blacklist = v;
         }
-    } else {
-        _tweakEnabled = YES;
-        _blacklist = [[self defaultBlacklist] mutableCopy];
-        [self saveConfig];
+    } @catch (NSException *ex) {
+        NSLog(@"[APMP] loadConfig error: %@", ex);
     }
 }
 
 - (void)saveConfig {
-    NSMutableDictionary *config = [NSMutableDictionary dictionary];
-    config[@"enabled"] = @(self.tweakEnabled);
-    config[@"blacklist"] = [self.blacklist copy];
-    NSData *data = [NSPropertyListSerialization dataWithPropertyList:config
+    NSMutableDictionary *c = [NSMutableDictionary dictionary];
+    c[@"enabled"] = @(_enabled);
+    c[@"blacklist"] = [_blacklist copy];
+    NSData *d = [NSPropertyListSerialization dataWithPropertyList:c
                                                               format:NSPropertyListXMLFormat_v1_0
                                                              options:0
                                                                error:nil];
-    if (data) {
+    if (d) {
         NSFileManager *fm = [NSFileManager defaultManager];
-        NSString *dir = [[self configPath] stringByDeletingLastPathComponent];
-        if (![fm fileExistsAtPath:dir]) {
+        NSString *dir = [kConfigPath stringByDeletingLastPathComponent];
+        if (![fm fileExistsAtPath:dir])
             [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-        }
-        [data writeToFile:[self configPath] atomically:YES];
+        [d writeToFile:kConfigPath atomically:YES];
     }
 }
 
-#pragma mark - Bluetooth Device Check (via BluetoothManager)
+#pragma mark - BluetoothManager helpers
 
-- (void)checkBluetoothDevice {
+- (void)enableBluetoothManager {
     @try {
-        Class btClass = NSClassFromString(@"BluetoothManager");
-        if (!btClass) {
-            NSLog(@"[AutoPodMode] BluetoothManager class not found");
-            _isDeviceSupported = NO;
-            return;
-        }
-
-        id btManager = [btClass performSelector:@selector(sharedInstance)];
-        if (!btManager) {
-            NSLog(@"[AutoPodMode] BluetoothManager sharedInstance is nil");
-            _isDeviceSupported = NO;
-            return;
-        }
-
-        NSArray *devices = nil;
+        Class c = NSClassFromString(@"BluetoothManager");
+        if (!c) { NSLog(@"[APMP] BluetoothManager class not found"); return; }
+        id m = [c performSelector:@selector(sharedInstance)];
+        if (!m) { NSLog(@"[APMP] BluetoothManager sharedInstance nil"); return; }
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-        if ([btManager respondsToSelector:@selector(connectedDevices)]) {
-            devices = [btManager performSelector:@selector(connectedDevices)];
-        }
+        if ([m respondsToSelector:@selector(enable)]) [m performSelector:@selector(enable)];
+        if ([m respondsToSelector:@selector(setPowered:)])
+            [m performSelector:@selector(setPowered:) withObject:@(YES)];
 #pragma clang diagnostic pop
+        NSLog(@"[APMP] BluetoothManager enabled");
+    } @catch (NSException *e) {
+        NSLog(@"[APMP] enableBluetoothManager error: %@", e);
+    }
+}
 
-        _isDeviceSupported = NO;
-
-        for (id device in devices) {
-            NSString *name = nil;
+- (void)scanDevices {
+    _deviceOK = NO;
+    @try {
+        Class c = NSClassFromString(@"BluetoothManager");
+        if (!c) return;
+        id m = [c performSelector:@selector(sharedInstance)];
+        if (!m) return;
+        NSArray *devs = nil;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-            if ([device respondsToSelector:@selector(name)]) {
-                name = [device performSelector:@selector(name)];
+        if ([m respondsToSelector:@selector(connectedDevices)])
+            devs = [m performSelector:@selector(connectedDevices)];
+#pragma clang diagnostic pop
+        NSLog(@"[APMP] connected BT devices count: %lu", (unsigned long)devs.count);
+        for (id d in devs) {
+            NSString *n = nil;
+            BOOL ancSupported = NO;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            if ([d respondsToSelector:@selector(name)]) n = [d performSelector:@selector(name)];
+            if ([d respondsToSelector:@selector(isActiveNoiseReductionSupported)]) {
+                NSNumber *s = [d performSelector:@selector(isActiveNoiseReductionSupported)];
+                if (s) ancSupported = s.boolValue;
             }
 #pragma clang diagnostic pop
-
-            NSString *lower = name.lowercaseString;
-            if ([lower containsString:@"airpods pro"] || [lower containsString:@"airpods max"]) {
-                _isDeviceSupported = YES;
-                NSLog(@"[AutoPodMode] Supported AirPods detected: %@", name);
+            NSString *l = n.lowercaseString;
+            BOOL nameMatch = [l containsString:@"airpods pro"] || [l containsString:@"airpods max"];
+            NSLog(@"[APMP] BT device: %@, nameMatch=%d, ancSupported=%d", n, nameMatch, ancSupported);
+            if (nameMatch || ancSupported) {
+                _deviceOK = YES;
                 return;
             }
         }
-
-        NSLog(@"[AutoPodMode] No supported AirPods found in %lu connected devices",
-              (unsigned long)devices.count);
     } @catch (NSException *e) {
-        NSLog(@"[AutoPodMode] Exception in checkBluetoothDevice: %@", e);
+        NSLog(@"[APMP] scanDevices error: %@", e);
     }
 }
 
-#pragma mark - Playback State (async, acts on callback)
+- (void)setMode:(APMPMode)mode {
+    NSLog(@"[APMP] setMode:%ld", (long)mode);
+    BOOL success = NO;
 
-- (void)queryPlaybackStateAndAct {
-    if (!self.tweakEnabled) return;
-
-    __block NSString *detectedBundleID = nil;
-    __block BOOL detectedPlaying = NO;
-    __block BOOL handled = NO;
-
-    MRMediaRemoteGetNowPlayingInfo(dispatch_get_main_queue(), ^(CFDictionaryRef info) {
-        if (info) {
-            NSDictionary *dict = (__bridge NSDictionary *)info;
-            NSString *bid = dict[kMRNowPlayingAppPidKey];
-            if (!bid) bid = dict[@"MPNowPlayingInfoPropertyAppIdentifier"];
-            if (!bid) bid = dict[@"appIdentifier"];
-            detectedBundleID = [bid copy];
-
-            NSNumber *stateNum = dict[kMRPlaybackStateKey];
-            if (!stateNum) stateNum = dict[@"MPNowPlayingInfoPropertyPlaybackState"];
-            if (stateNum) {
-                MRPlaybackState state = (MRPlaybackState)[stateNum integerValue];
-                detectedPlaying = (state == MRPlaybackStatePlaying);
-            }
-        }
-
-        // Query playback state separately for accuracy
-        MRMediaRemoteGetNowPlayingApplicationIsPlaying(dispatch_get_main_queue(), ^(Boolean isPlaying) {
-            detectedPlaying = (BOOL)isPlaying;
-            handled = YES;
-            [self handlePlaybackResult:detectedBundleID isPlaying:detectedPlaying];
-        });
-
-        // Fallback if second async call doesn't fire within 1s
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            if (!handled) {
-                handled = YES;
-                [self handlePlaybackResult:detectedBundleID isPlaying:detectedPlaying];
-            }
-        });
-    });
-
-    // Ultimate fallback: if MRMediaRemoteGetNowPlayingInfo doesn't call back
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        if (!handled) {
-            handled = YES;
-            NSLog(@"[AutoPodMode] MediaRemote timeout, using last known state");
-            [self handlePlaybackResult:self.currentPlayingAppBundleID isPlaying:self.isPlaying];
-        }
-    });
-}
-
-- (void)handlePlaybackResult:(NSString *)bundleID isPlaying:(BOOL)playing {
-    if (!self.tweakEnabled) return;
-
-    self.currentPlayingAppBundleID = bundleID;
-
-    BOOL stateChanged = (self.lastKnownPlayingState != playing);
-    self.lastKnownPlayingState = playing;
-    self.isPlaying = playing;
-
-    NSLog(@"[AutoPodMode] State: app=%@ playing=%d changed=%d supported=%d",
-          bundleID, playing, stateChanged, self.isDeviceSupported);
-
-    // Blacklist check
-    if (bundleID && [self.blacklist containsObject:bundleID]) {
-        NSLog(@"[AutoPodMode] App %@ is in blacklist, skipping", bundleID);
-        return;
-    }
-
-    // Device check
-    if (!self.isDeviceSupported) {
-        NSLog(@"[AutoPodMode] No supported AirPods, skipping");
-        return;
-    }
-
-    // Manual override cooldown
-    if (self.lastManualOverrideTime) {
-        NSTimeInterval elapsed = -[self.lastManualOverrideTime timeIntervalSinceNow];
-        if (elapsed < kManualOverrideCooldown) {
-            NSLog(@"[AutoPodMode] Manual override cooldown (%.0fs remaining)", kManualOverrideCooldown - elapsed);
-            return;
-        }
-        self.lastManualOverrideTime = nil;
-    }
-
-    // Only act on state change
-    if (stateChanged) {
-        if (playing) {
-            NSLog(@"[AutoPodMode] Media started playing -> setting ANC");
-            [self applyListeningMode:1]; // 1 = ANC
-        } else {
-            NSLog(@"[AutoPodMode] Media paused -> setting Transparency");
-            [self applyListeningMode:2]; // 2 = Transparency
-        }
-    }
-}
-
-#pragma mark - Set Listening Mode (via BluetoothManager)
-
-- (void)applyListeningMode:(NSInteger)mode {
+    // Strategy 1: AVAudioSession setBluetoothListeningMode:error: (most modern, works in SpringBoard)
     @try {
-        Class btClass = NSClassFromString(@"BluetoothManager");
-        if (!btClass) {
-            NSLog(@"[AutoPodMode] BluetoothManager not available");
-            return;
-        }
-
-        id btManager = [btClass performSelector:@selector(sharedInstance)];
-        if (!btManager) return;
-
-        NSArray *devices = nil;
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-        if ([btManager respondsToSelector:@selector(connectedDevices)]) {
-            devices = [btManager performSelector:@selector(connectedDevices)];
-        }
-#pragma clang diagnostic pop
-
-        BOOL success = NO;
-
-        for (id device in devices) {
-            NSString *name = nil;
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-            if ([device respondsToSelector:@selector(name)]) {
-                name = [device performSelector:@selector(name)];
-            }
-#pragma clang diagnostic pop
-
-            NSString *lower = name.lowercaseString;
-            if (!([lower containsString:@"airpods pro"] || [lower containsString:@"airpods max"])) {
-                continue;
-            }
-
-            NSLog(@"[AutoPodMode] Setting mode %ld on device: %@", (long)mode, name);
-
-            // Try setBluetoothListeningMode: (newer API)
-            SEL setModeSel = NSSelectorFromString(@"setBluetoothListeningMode:");
-            if ([device respondsToSelector:setModeSel]) {
-                NSNumber *modeNum = @(mode);
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                [device performSelector:setModeSel withObject:modeNum];
-#pragma clang diagnostic pop
+        AVAudioSession *ses = [AVAudioSession sharedInstance];
+        SEL s4 = NSSelectorFromString(@"setBluetoothListeningMode:error:");
+        if ([ses respondsToSelector:s4]) {
+            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:[ses methodSignatureForSelector:s4]];
+            inv.selector = s4;
+            inv.target = ses;
+            NSNumber *mn = @(mode);
+            NSError *e = nil;
+            [inv setArgument:&mn atIndex:2];
+            [inv setArgument:&e atIndex:3];
+            [inv invoke];
+            BOOL ok = NO;
+            [inv getReturnValue:&ok];
+            if (ok) {
+                NSLog(@"[APMP] AVAudioSession setBluetoothListeningMode:%ld SUCCESS", (long)mode);
                 success = YES;
-                NSLog(@"[AutoPodMode] Set mode via setBluetoothListeningMode:");
+            } else {
+                NSLog(@"[APMP] AVAudioSession setBluetoothListeningMode returned NO, error=%@", e);
             }
-
-            // Try setActiveNoiseReductionMode: (older API)
-            SEL setANCSel = NSSelectorFromString(@"setActiveNoiseReductionMode:");
-            if ([device respondsToSelector:setANCSel]) {
-                NSNumber *modeNum = @(mode);
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                [device performSelector:setANCSel withObject:modeNum];
-#pragma clang diagnostic pop
-                success = YES;
-                NSLog(@"[AutoPodMode] Set mode via setActiveNoiseReductionMode:");
-            }
-
-            // Try setListeningMode: (another variant)
-            SEL setListeningSel = NSSelectorFromString(@"setListeningMode:");
-            if ([device respondsToSelector:setListeningSel]) {
-                NSNumber *modeNum = @(mode);
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                [device performSelector:setListeningSel withObject:modeNum];
-#pragma clang diagnostic pop
-                success = YES;
-                NSLog(@"[AutoPodMode] Set mode via setListeningMode:");
-            }
-        }
-
-        if (!success) {
-            NSLog(@"[AutoPodMode] No compatible method found on any AirPods device");
+        } else {
+            NSLog(@"[APMP] AVAudioSession does NOT respondTo setBluetoothListeningMode");
         }
     } @catch (NSException *e) {
-        NSLog(@"[AutoPodMode] Exception in applyListeningMode: %@", e);
+        NSLog(@"[APMP] AVAudioSession setMode error: %@", e);
+    }
+
+    // Strategy 2: BluetoothManager device setters (fallback)
+    if (!success) {
+        @try {
+            Class c = NSClassFromString(@"BluetoothManager");
+            if (!c) return;
+            id m = [c performSelector:@selector(sharedInstance)];
+            if (!m) return;
+            NSArray *devs = nil;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            if ([m respondsToSelector:@selector(connectedDevices)])
+                devs = [m performSelector:@selector(connectedDevices)];
+#pragma clang diagnostic pop
+            NSNumber *mn = @(mode);
+            for (id d in devs) {
+                NSString *n = nil;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                if ([d respondsToSelector:@selector(name)]) n = [d performSelector:@selector(name)];
+#pragma clang diagnostic pop
+                SEL s1 = NSSelectorFromString(@"setActiveNoiseReductionMode:");
+                if ([d respondsToSelector:s1]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                    [d performSelector:s1 withObject:mn];
+#pragma clang diagnostic pop
+                    NSLog(@"[APMP] %@ setActiveNoiseReductionMode:%ld", n, (long)mode);
+                    success = YES;
+                }
+                SEL s2 = NSSelectorFromString(@"setBluetoothListeningMode:");
+                if ([d respondsToSelector:s2]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                    [d performSelector:s2 withObject:mn];
+#pragma clang diagnostic pop
+                    NSLog(@"[APMP] %@ setBluetoothListeningMode:%ld", n, (long)mode);
+                    success = YES;
+                }
+                SEL s3 = NSSelectorFromString(@"setListeningMode:");
+                if ([d respondsToSelector:s3]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                    [d performSelector:s3 withObject:mn];
+#pragma clang diagnostic pop
+                    NSLog(@"[APMP] %@ setListeningMode:%ld", n, (long)mode);
+                    success = YES;
+                }
+            }
+        } @catch (NSException *e) {
+            NSLog(@"[APMP] BT device setMode error: %@", e);
+        }
+    }
+
+    if (!success) NSLog(@"[APMP] WARNING: All mode-setting strategies failed!");
+}
+
+#pragma mark - Playback state via MediaRemote
+
+- (void)check {
+    [self loadConfig];
+    if (!_enabled) return;
+    [self enableBluetoothManager];
+    [self scanDevices];
+
+    __block NSString *bid = [_nowPlayingBundleID copy];
+    __block BOOL playing = _lastPlaying;
+    __block BOOL done = NO;
+
+    void (^applyNow)(void) = ^{
+        if (!done) { done = YES; [self apply:bid playing:playing]; }
+    };
+
+    dispatch_queue_t q = dispatch_get_main_queue();
+
+    // Query NowPlaying info for bundle ID + playback state
+    MRMediaRemoteGetNowPlayingInfo(q, ^(CFDictionaryRef info) {
+        if (info) {
+            NSDictionary *d = (__bridge NSDictionary *)info;
+            NSString *b = d[kMRNowPlayingAppPidKey];
+            if (!b) b = d[@"MPNowPlayingInfoPropertyAppIdentifier"];
+            if (!b) b = d[@"kMRMediaRemoteNowPlayingInfoClientIdentifierKey"];
+            if (b) bid = b;
+            NSNumber *st = d[@"MRMediaRemoteNowPlayingInfoPlaybackState"];
+            if (!st) st = d[@"MPNowPlayingInfoPropertyPlaybackState"];
+            if (st) playing = (st.integerValue == 1);
+        }
+        // Follow-up: direct isPlaying query (most reliable)
+        MRMediaRemoteGetNowPlayingApplicationIsPlaying(q, ^(Boolean p) {
+            playing = (BOOL)p;
+            applyNow();
+        });
+    });
+
+    // Safety timeout: 2 seconds
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2*NSEC_PER_SEC)), q, applyNow);
+}
+
+- (void)apply:(NSString *)bid playing:(BOOL)playing {
+    if (!_enabled) return;
+
+    BOOL changed = (_lastPlaying != playing);
+    _lastPlaying = playing;
+    if (bid) _nowPlayingBundleID = bid;
+
+    NSLog(@"[APMP] app=%@ playing=%d changed=%d deviceOK=%d enabled=%d",
+          bid, playing, changed, _deviceOK, _enabled);
+
+    if (bid && [_blacklist containsObject:bid]) {
+        NSLog(@"[APMP] blacklist hit: %@, skip", bid);
+        return;
+    }
+    if (!_deviceOK) {
+        NSLog(@"[APMP] no supported ANC device, skip");
+        return;
+    }
+
+    if (_lastManual) {
+        NSTimeInterval elapsed = -[_lastManual timeIntervalSinceNow];
+        if (elapsed < kManualOverrideCooldown) {
+            NSLog(@"[APMP] manual override cooldown: %.0fs left, skip", kManualOverrideCooldown - elapsed);
+            return;
+        }
+        _lastManual = nil;
+    }
+
+    if (!changed) {
+        NSLog(@"[APMP] no state change, skip");
+        return;
+    }
+
+    if (playing) {
+        NSLog(@"[APMP] => PLAYING, set ANC");
+        [self setMode:APMPModeANC];
+    } else {
+        NSLog(@"[APMP] => PAUSED, set Transparency");
+        [self setMode:APMPModeTransparency];
     }
 }
 
-#pragma mark - Start / Periodic
+#pragma mark - Entry
 
 - (void)start {
+    NSLog(@"[APMP] ===== starting up in SpringBoard =====");
     [self loadConfig];
+    [self enableBluetoothManager];
 
-    // Register for MediaRemote notifications
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(onMediaNotification:)
-                                                 name:@"MRMediaRemoteNowPlayingInfoDidChangeNotification"
-                                               object:nil];
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(onMediaNotification:)
-                                                 name:@"MRMediaRemotePlaybackStateChangedNotification"
-                                               object:nil];
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(onMediaNotification:)
-                                                 name:@"MRNowPlayingApplicationDidChangeNotification"
-                                               object:nil];
+    NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
 
-    // Check device
-    [self checkBluetoothDevice];
+    // MediaRemote notifications (distributed, SpringBoard receives them)
+    [nc addObserver:self selector:@selector(onNote:)
+           name:@"MRMediaRemoteNowPlayingInfoDidChangeNotification" object:nil];
+    [nc addObserver:self selector:@selector(onNote:)
+           name:@"MRMediaRemotePlaybackStateChangedNotification" object:nil];
+    [nc addObserver:self selector:@selector(onNote:)
+           name:@"MRNowPlayingApplicationDidChangeNotification" object:nil];
+    [nc addObserver:self selector:@selector(onNote:)
+           name:@"kMRMediaRemoteNowPlayingApplicationIsPlayingDidChangeNotification" object:nil];
 
-    // Query initial state
-    [self queryPlaybackStateAndAct];
+    // Audio route changes (AirPods connect/disconnect)
+    [nc addObserver:self selector:@selector(onNote:)
+           name:AVAudioSessionRouteChangeNotification object:nil];
 
-    // Periodic refresh: check device + playback state every 10 seconds
-    [NSTimer scheduledTimerWithTimeInterval:10.0
-                                     target:self
-                                   selector:@selector(periodicRefresh:)
-                                   userInfo:nil
-                                    repeats:YES];
+    // User manual listening mode change -> cooldown
+    NSString *modeChangeNote = @"AVAudioSessionBluetoothDeviceListeningModeChangedNotification";
+    [nc addObserver:self selector:@selector(onListeningChange:)
+           name:modeChangeNote object:nil];
+    // Also listen on a few other possible notification names
+    [nc addObserver:self selector:@selector(onListeningChange:)
+           name:@"BluetoothDeviceListeningModeDidChangeNotification" object:nil];
 
-    NSLog(@"[AutoPodMode] Tweak started in mediaremoted, enabled=%d", self.tweakEnabled);
+    // Initial check (delayed so services are up)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4*NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ [self check]; });
+
+    // Periodic safety check every 15s
+    [NSTimer scheduledTimerWithTimeInterval:15.0 target:self selector:@selector(check) userInfo:nil repeats:YES];
+
+    NSLog(@"[APMP] start completed, observers registered");
 }
 
-- (void)periodicRefresh:(NSTimer *)timer {
-    [self loadConfig];
-    [self checkBluetoothDevice];
-    [self queryPlaybackStateAndAct];
+- (void)onNote:(NSNotification *)n {
+    NSLog(@"[APMP] notification: %@", n.name);
+    dispatch_async(dispatch_get_main_queue(), ^{ [self check]; });
 }
 
-- (void)onMediaNotification:(NSNotification *)note {
-    NSLog(@"[AutoPodMode] Notification: %@", note.name);
-    [self queryPlaybackStateAndAct];
+- (void)onListeningChange:(NSNotification *)n {
+    NSLog(@"[APMP] user changed listening mode manually (note: %@), cooldown activated", n.name);
+    _lastManual = [NSDate date];
 }
 
 @end
 
 __attribute__((constructor))
-static void AutoPodModeInit() {
+static void APMPInit(void) {
     @autoreleasepool {
-        NSLog(@"[AutoPodMode] Loading in mediaremoted...");
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+        NSLog(@"[APMP] constructor fired");
+        NSString *procName = [[NSProcessInfo processInfo] processName];
+        NSLog(@"[APMP] current process: %@", procName);
+
+        // Safety: only start in SpringBoard.
+        // (Filter in plist already ensures injection into SpringBoard,
+        //  this extra check is defensive.)
+        if (procName && ![procName isEqualToString:@"SpringBoard"]) {
+            NSLog(@"[APMP] skip: not SpringBoard, proc=%@", procName);
+            return;
+        }
+
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2*NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            [[AutoPodModeManager sharedInstance] start];
-        });
+            [[APMPManager shared] start];
+                        });
     }
 }

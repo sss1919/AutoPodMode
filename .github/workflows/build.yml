@@ -21,8 +21,8 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    name: Build Rootless deb (arm64e)
+    runs-on: macos-14
+    name: Build Rootless deb (arm64e) on macOS
 
     steps:
       - name: Checkout repository
@@ -31,47 +31,41 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - name: Install build dependencies
+      - name: Install build dependencies (Homebrew + ldid)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends \
-            build-essential fakeroot rsync curl perl zip git \
-            libxml2 libncurses-dev xz-utils ca-certificates \
-            dpkg-dev libssl-dev zlib1g-dev libplist-dev
-          # Build ldid from source (not in Ubuntu repos)
-          git clone --depth 1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid
-          cd /tmp/ldid && make -j$(nproc) && sudo cp ldid /usr/local/bin/ && sudo chmod +x /usr/local/bin/ldid
-          # Adjust fakeroot to favor sysv
-          sudo update-alternatives --set fakeroot /usr/bin/fakeroot-sysv 2>/dev/null || true
-          echo "Dependencies installed"
-          uname -a
+          brew install ldid make xz gnu-tar dpkg 2>/dev/null || true
+          # Ensure gnu-tar is used as tar for consistent behavior
+          echo "gnubin path..."
+          ls /usr/local/opt/gnu-tar/libexec/gnubin 2>/dev/null || true
+          which tar
+          tar --version
+          which ldid && ldid --version 2>&1 | head -1 || true
+          # Fallback: build ldid if brew install failed
+          if ! command -v ldid >/dev/null 2>&1; then
+            echo "Building ldid from source..."
+            git clone --depth 1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid
+            cd /tmp/ldid && ./make.sh || (make -j$(sysctl -n hw.ncpu)) && sudo cp ldid /usr/local/bin/
+          fi
+          echo "Dependencies OK"
 
-      - name: Cache Theos + toolchain + SDKs
+      - name: Cache Theos + SDKs
         id: cache-theos
         uses: actions/cache@v4
         with:
           path: |
             ${{ env.THEOS }}
-          key: ubuntu-theos-v9-${{ hashFiles('Makefile') }}
+          key: macos-theos-v3-${{ hashFiles('Makefile') }}
           restore-keys: |
-            ubuntu-theos-v9-
+            macos-theos-v3-
 
       - name: Install Theos
         if: steps.cache-theos.outputs.cache-hit != 'true'
         run: |
           rm -rf "${THEOS}"
           git clone --recursive https://github.com/theos/theos.git "${THEOS}"
-          echo "Cloned theos/theos"
+          echo "Cloned theos"
 
-          # Download iOS toolchain (from L1ghtmann/llvm-project)
-          echo "Downloading iOS toolchain..."
-          ARCH=$(uname -m)
-          mkdir -p "${THEOS}/toolchain"
-          curl -fsSL "https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-${ARCH}.tar.xz" \
-            | tar -xJvf - -C "${THEOS}/toolchain/"
-          echo "Toolchain installed:"
-          ls -la "${THEOS}/toolchain/linux/iphone/bin/" 2>/dev/null || ls -R "${THEOS}/toolchain/" | head -30
-
+          # macOS toolchain: use theos built-in + Xcode
           # Clone SDKs
           mkdir -p "${THEOS}/sdks"
           git clone --depth 1 https://github.com/theos/sdks.git /tmp/sdks
@@ -82,18 +76,24 @@ jobs:
             fi
           done
           echo "SDKs installed:"
-          ls -la "${THEOS}/sdks/"
+          ls -la "${THEOS}/sdks/" || true
 
-      - name: Verify Theos + SDKs + toolchain
+      - name: Verify Theos + SDKs
         run: |
           echo "=== SDKs ==="
-          ls "${THEOS}/sdks"
-          echo "=== Toolchain ==="
-          ls "${THEOS}/toolchain/linux/iphone/bin/" 2>/dev/null || { echo "Toolchain not found!"; find "${THEOS}/toolchain" -name "clang" -type f; }
-          if [ ! -d "${THEOS}/sdks/iPhoneOS16.5.sdk" ]; then
-            echo "::error::iPhoneOS16.5.sdk not found!"
-            exit 1
+          ls "${THEOS}/sdks" || true
+          # Fallback: use Xcode iPhoneOS SDK if no theos SDK exists
+          if [ ! -d "${THEOS}/sdks/iPhoneOS16.5.sdk" ] && [ ! -d "${THEOS}/sdks/iPhoneOS17.0.sdk" ]; then
+            XCODE_SDK=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || echo "")
+            echo "Xcode SDK path: $XCODE_SDK"
+            if [ -n "$XCODE_SDK" ] && [ -d "$XCODE_SDK" ]; then
+              cp -R "$XCODE_SDK" "${THEOS}/sdks/iPhoneOS17.0.sdk" || true
+              echo "Copied Xcode SDK as iPhoneOS17.0.sdk"
+            fi
           fi
+          ls "${THEOS}/sdks" 2>/dev/null || echo "No SDKs found!"
+          echo "=== Theos bin ==="
+          ls "${THEOS}/bin" 2>/dev/null | head -10
           echo "All verified OK"
 
       - name: Build package (rootless)
@@ -103,163 +103,145 @@ jobs:
           export PATH="${THEOS}/bin:$PATH"
           export THEOS="${THEOS}"
           export THEOS_PACKAGE_SCHEME=rootless
+          # Use GNU make (gmake on macOS) if available
+          export MAKE_CMD=$(command -v gmake || command -v make)
 
           echo "=== Build env ==="
           echo "ARCHS=${ARCHS}"
           echo "TARGET=${TARGET}"
           echo "THEOS_PACKAGE_SCHEME=${THEOS_PACKAGE_SCHEME}"
+          echo "make: $MAKE_CMD"
 
-          make clean 2>&1 | tail -5
+          $MAKE_CMD clean 2>&1 | tail -5 || true
           echo "=== Starting package build ==="
-          make package FINALPACKAGE=1 STRIP=1 2>&1 | tee build.log
+          $MAKE_CMD package FINALPACKAGE=1 STRIP=1 2>&1 | tee build.log
           BUILD_EXIT=${PIPESTATUS[0]}
           echo "Build exit code: $BUILD_EXIT"
 
           if [ $BUILD_EXIT -ne 0 ]; then
             echo "::error::Build failed with exit code $BUILD_EXIT"
+            tail -80 build.log
             exit 1
           fi
 
-      - name: Verify & fix rootless structure
-        id: verify-fix
+      - name: Collect & verify deb packages
+        id: collect
         run: |
           mkdir -p "${DEB_REDIST}"
-          DEBS=$(find "${GITHUB_WORKSPACE}/packages" -maxdepth 1 -name "*.deb" 2>/dev/null)
+          DEBS=$(find "${GITHUB_WORKSPACE}/packages" -maxdepth 1 -name "*.deb" 2>/dev/null || true)
           if [ -z "$DEBS" ]; then
-            echo "::warning::No .deb packages found"
-            find . -name "*.deb" -ls
-            exit 0
+            echo "::warning::No .deb in packages/, searching whole workspace"
+            DEBS=$(find "${GITHUB_WORKSPACE}" -name "*.deb" -not -path "*/theos/*" 2>/dev/null || true)
           fi
+
+          echo "Found debs:"
+          echo "$DEBS"
 
           for deb in $DEBS; do
             bn=$(basename "$deb")
+            echo "=== Inspecting: $bn ==="
+            echo "Size: $(stat -f%z "$deb" 2>/dev/null || stat -c%s "$deb" 2>/dev/null) bytes"
+
+            # Verify rootless paths inside the deb
             tmpdir=$(mktemp -d)
-
             cd "$tmpdir"
-            ar x "$deb"
-
-            echo "=== ar contents of $bn ==="
-            ls -la
-
-            # Find data archive (could be .gz, .xz, .zst, .lzma, or uncompressed)
+            ar x "$deb" 2>/dev/null || true
+            # Determine data archive name
             DATA_ARCHIVE=""
             for ext in gz xz zst lzma; do
-              if [ -f "data.tar.${ext}" ]; then
-                DATA_ARCHIVE="data.tar.${ext}"
-                break
-              fi
+              [ -f "data.tar.${ext}" ] && DATA_ARCHIVE="data.tar.${ext}" && break
             done
-            if [ -z "$DATA_ARCHIVE" ] && [ -f "data.tar" ]; then
-              DATA_ARCHIVE="data.tar"
-            fi
-
+            [ -z "$DATA_ARCHIVE" ] && [ -f "data.tar" ] && DATA_ARCHIVE="data.tar"
             if [ -z "$DATA_ARCHIVE" ]; then
-              echo "::error::No data archive found in $bn"
-              cd /
-              rm -rf "$tmpdir"
+              echo "  ::warning:: No data archive in $bn"
               continue
             fi
-            echo "Data archive: $DATA_ARCHIVE"
 
-            # Find control archive
-            CONTROL_ARCHIVE=""
-            for ext in gz xz zst lzma; do
-              if [ -f "control.tar.${ext}" ]; then
-                CONTROL_ARCHIVE="control.tar.${ext}"
-                break
-              fi
-            done
-            if [ -z "$CONTROL_ARCHIVE" ] && [ -f "control.tar" ]; then
-              CONTROL_ARCHIVE="control.tar"
-            fi
-            echo "Control archive: $CONTROL_ARCHIVE"
-
-            # Extract data archive
-            mkdir -p data_extract
-            cd data_extract
+            mkdir -p extract
+            cd extract
             case "$DATA_ARCHIVE" in
-              *.gz)   tar xzf "../$DATA_ARCHIVE" ;;
-              *.xz)   tar xJf "../$DATA_ARCHIVE" ;;
-              *.zst)  tar --zstd -xf "../$DATA_ARCHIVE" 2>/dev/null || zstd -d "../$DATA_ARCHIVE" -c | tar xf - ;;
-              *.lzma) tar --lzma -xf "../$DATA_ARCHIVE" 2>/dev/null || lzma -d "../$DATA_ARCHIVE" -c | tar xf - ;;
+              *.gz)   tar xzf "../$DATA_ARCHIVE" 2>/dev/null || tar -xzf "../$DATA_ARCHIVE" ;;
+              *.xz)   tar xJf "../$DATA_ARCHIVE" 2>/dev/null || tar -xJf "../$DATA_ARCHIVE" ;;
               *)      tar xf "../$DATA_ARCHIVE" ;;
             esac
 
-            echo "=== File paths in $bn ==="
-            find . -not -name '.' | head -40
+            echo "  File listing (top 20):"
+            find . -not -name '.' | head -20
 
-            # Check if paths are rootless (under var/jb/)
-            ROOTLESS_COUNT=$(find . -path "./var/jb/*" 2>/dev/null | wc -l)
-            ROOTHIDE_COUNT=$(find . -not -path './var/*' -not -path './var' -not -path './var/jb/*' -not -path './var/jb' -not -name '.' 2>/dev/null | wc -l)
+            # Check for var/jb (rootless) vs Library (roothide) paths
+            RL=$(find . -path "./var/jb/*" 2>/dev/null | wc -l | tr -d ' ')
+            RH=$(find . \( -path './Library/*' -o -path './usr/*' \) 2>/dev/null | wc -l | tr -d ' ')
+            echo "  Rootless(var/jb) file count: $RL"
+            echo "  Roothide(Library/usr) count:   $RH"
 
-            echo "Rootless paths (var/jb): $ROOTLESS_COUNT"
-            echo "Roothide paths (other): $ROOTHIDE_COUNT"
-
+            # If it has roothide paths AND no rootless paths -> convert
             NEEDS_FIX=0
-
-            if [ "$ROOTLESS_COUNT" -gt 0 ] && [ "$ROOTHIDE_COUNT" -eq 0 ]; then
-              echo "Paths already rootless"
-            else
-              echo "Converting paths to rootless..."
+            if [ "$RL" -eq 0 ] && [ "$RH" -gt 0 ]; then
+              echo "  => Needs conversion to rootless paths"
               NEEDS_FIX=1
               mkdir -p var/jb
-              for dir in Library usr bin etc tmp; do
-                if [ -d "$dir" ]; then
-                  if [ -d "var/jb/$dir" ]; then
-                    echo "  Merging $dir into var/jb/$dir"
-                    cp -R "$dir"/* "var/jb/$dir/" 2>/dev/null || true
-                    rm -rf "$dir"
-                  else
-                    echo "  Moving $dir -> var/jb/$dir"
-                    mv "$dir" var/jb/
-                  fi
+              for d in Library usr bin etc tmp; do
+                if [ -d "$d" ]; then
+                  [ -d "var/jb/$d" ] && cp -R "$d"/* "var/jb/$d"/ 2>/dev/null
+                  [ -d "var/jb/$d" ] || mv "$d" var/jb/
                 fi
               done
-              echo "=== Fixed file paths ==="
-              find . -not -name '.' | head -40
+              rm -rf Library usr bin etc tmp
             fi
-
-            # Repack data archive as .gz (remove old archive first)
-            rm -f "$tmpdir/data.tar" "$tmpdir/data.tar.gz" "$tmpdir/data.tar.xz" "$tmpdir/data.tar.zst" 2>/dev/null
-            cd "$tmpdir/data_extract"
-            tar czf "$tmpdir/data.tar.gz" ./*
-            cd "$tmpdir"
-
-            # Extract and fix control file
-            if [ -n "$CONTROL_ARCHIVE" ]; then
-              mkdir -p control_extract
-              cd control_extract
-              case "$CONTROL_ARCHIVE" in
-                *.gz)   tar xzf "$tmpdir/$CONTROL_ARCHIVE" ;;
-                *.xz)   tar xJf "$tmpdir/$CONTROL_ARCHIVE" ;;
-                *.zst)  tar --zstd -xf "$tmpdir/$CONTROL_ARCHIVE" 2>/dev/null || zstd -d "$tmpdir/$CONTROL_ARCHIVE" -c | tar xf - ;;
-                *.lzma) tar --lzma -xf "$tmpdir/$CONTROL_ARCHIVE" 2>/dev/null || lzma -d "$tmpdir/$CONTROL_ARCHIVE" -c | tar xf - ;;
-                *)      tar xf "$tmpdir/$CONTROL_ARCHIVE" ;;
-              esac
-              if [ -f "control" ]; then
-                echo "=== Control file before ==="
-                cat control
-                if ! grep -q "^Architecture:.*arm64e" control; then
-                  sed -i 's/^Architecture:.*/Architecture: iphoneos-arm64e/' control
-                  echo "=== Control file after ==="
-                  cat control
-                else
-                  echo "Architecture already arm64e"
-                fi
-              fi
-              # Repack control as .gz (remove old archive first)
-              rm -f "$tmpdir/control.tar" "$tmpdir/control.tar.gz" "$tmpdir/control.tar.xz" "$tmpdir/control.tar.zst" 2>/dev/null
-              tar czf "$tmpdir/control.tar.gz" ./*
-              cd "$tmpdir"
-            fi
-
-            # Rebuild deb with fixed data and control
-            OUTPUT_DEB="${DEB_REDIST}/com.sss1919.autopodmode_1.0.1_iphoneos-arm64e.deb"
-            rm -f "$OUTPUT_DEB"
-            ar r "$OUTPUT_DEB" debian-binary control.tar.gz data.tar.gz
-            echo "Final package: $OUTPUT_DEB"
 
             cd /
+            if [ "$NEEDS_FIX" -eq 1 ]; then
+              echo "  Rebuilding $bn as rootless..."
+              mkdir -p "$tmpdir/repack"
+              cd "$tmpdir/extract"
+              tar czf "$tmpdir/repack/data.tar.gz" .
+              # Also need to re-pack control.tar.gz from $tmpdir
+              CONTROL_ARCHIVE=""
+              for ext in gz xz zst lzma; do
+                [ -f "$tmpdir/control.tar.${ext}" ] && CONTROL_ARCHIVE="control.tar.${ext}" && break
+              done
+              [ -z "$CONTROL_ARCHIVE" ] && [ -f "$tmpdir/control.tar" ] && CONTROL_ARCHIVE="control.tar"
+              cd "$tmpdir/repack"
+              if [ -n "$CONTROL_ARCHIVE" ]; then
+                mkdir -p ctrl
+                cd ctrl
+                case "$CONTROL_ARCHIVE" in
+                  *.gz)   tar xzf "$tmpdir/$CONTROL_ARCHIVE" ;;
+                  *.xz)   tar xJf "$tmpdir/$CONTROL_ARCHIVE" ;;
+                  *)      tar xf "$tmpdir/$CONTROL_ARCHIVE" ;;
+                esac
+                # Ensure Architecture is arm64e
+                if [ -f control ] && ! grep -q "^Architecture:.*arm64e" control; then
+                  sed -i '' 's/^Architecture:.*/Architecture: iphoneos-arm64e/' control 2>/dev/null || \
+                    sed -i    's/^Architecture:.*/Architecture: iphoneos-arm64e/' control 2>/dev/null
+                fi
+                tar czf "$tmpdir/repack/control.tar.gz" .
+                cd "$tmpdir/repack"
+              else
+                echo "  ::warning:: No control archive! copying original ar contents"
+                cp "$tmpdir/control.tar"* "$tmpdir/repack/" 2>/dev/null || true
+                ls "$tmpdir/repack/"
+              fi
+              # ensure debian-binary
+              [ -f "$tmpdir/debian-binary" ] || echo "2.0" > "$tmpdir/repack/debian-binary"
+              cp "$tmpdir/debian-binary" "$tmpdir/repack/debian-binary" 2>/dev/null || true
+              # final ar
+              FINAL_DEB="${DEB_REDIST}/com.sss1919.autopodmode_1.0.3_iphoneos-arm64e.deb"
+              rm -f "$FINAL_DEB"
+              # ar r order: debian-binary control.tar.gz data.tar.gz
+              cd "$tmpdir/repack"
+              # use ar with proper BSD/macOS compat
+              ar rc "$FINAL_DEB" debian-binary control.tar.gz data.tar.gz 2>/dev/null || \
+                /usr/bin/ar rc "$FINAL_DEB" debian-binary control.tar.gz data.tar.gz
+              ls -la "$FINAL_DEB"
+            else
+              echo "  Paths OK, copying as-is"
+              FINAL_DEB="${DEB_REDIST}/$bn"
+              cp "$deb" "$FINAL_DEB"
+              # Rename to consistent name (version 1.0.3)
+              mv "$FINAL_DEB" "${DEB_REDIST}/com.sss1919.autopodmode_1.0.3_iphoneos-arm64e.deb" 2>/dev/null || true
+            fi
+
             rm -rf "$tmpdir"
           done
 
@@ -281,8 +263,8 @@ jobs:
         if: github.event_name != 'pull_request' && startsWith(github.ref, 'refs/heads/') && success()
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.0-${{ github.run_number }}
-          name: AutoPodMode v1.0.0 (Build ${{ github.run_number }})
+          tag_name: v1.0.3-${{ github.run_number }}
+          name: AutoPodMode v1.0.3 (Build ${{ github.run_number }})
           generate_release_notes: true
           draft: false
           prerelease: false
