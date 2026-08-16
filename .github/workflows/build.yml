@@ -11,7 +11,7 @@ env:
   THEOS: ${{ github.workspace }}/theos
   THEOS_PACKAGE_SCHEME: rootless
   ARCHS: arm64e
-  TARGET: iphone:clang:17.0:15.0
+  TARGET: iphone:clang:16.5:15.0
   DEB_REDIST: ${{ github.workspace }}/redist
 
 permissions:
@@ -103,6 +103,13 @@ jobs:
           echo "=== Toolchain ==="
           ls -la "${THEOS}/toolchain" 2>/dev/null || true
           ls "${THEOS}/toolchain/linux/iphone/" 2>/dev/null || true
+          # Verify required SDK exists
+          if [ ! -d "${THEOS}/sdks/iPhoneOS16.5.sdk" ]; then
+            echo "::error::iPhoneOS16.5.sdk not found! Available SDKs:"
+            ls "${THEOS}/sdks/" 2>/dev/null || echo "No sdks dir"
+            exit 1
+          fi
+          echo "iPhoneOS16.5.sdk found OK"
 
       - name: Build package (rootless + roothide)
         id: build
