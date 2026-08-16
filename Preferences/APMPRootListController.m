@@ -2,10 +2,6 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
-@class PSSwitchCell;
-@class PSButtonCell;
-@class PSTitleValueCell;
-
 @interface PSSpecifier (Private)
 + (id)groupSpecifier;
 + (id)preferenceSpecifierNamed:(NSString *)name target:(id)target set:(SEL)set get:(SEL)get detail:(Class)detail cell:(Class)cell edit:(SEL)edit;
@@ -149,7 +145,7 @@
                                                                 set:@selector(setEnabled:specifier:)
                                                                 get:@selector(enabled)
                                                              detail:Nil
-                                                               cell:[PSSwitchCell class]
+                                                               cell:NSClassFromString(@"PSSwitchCell")
                                                                edit:Nil];
     [enableSpec setProperty:@"媒体播放时自动降噪，暂停时自动通透" forKey:@"footerText"];
     [specs addObject:enableSpec];
@@ -164,7 +160,7 @@
                                                                 set:Nil
                                                                 get:Nil
                                                              detail:Nil
-                                                               cell:[PSButtonCell class]
+                                                               cell:NSClassFromString(@"PSButtonCell")
                                                                edit:Nil];
     [resetSpec setProperty:NSStringFromSelector(@selector(resetBlacklist)) forKey:@"action"];
     [resetSpec setProperty:[UIColor systemRedColor] forKey:@"cellTintColor"];
@@ -184,7 +180,7 @@
                                                              set:@selector(setApp:specifier:)
                                                              get:@selector(appBlacklisted:)
                                                           detail:Nil
-                                                            cell:[PSTitleValueCell class]
+                                                            cell:NSClassFromString(@"PSTitleValueCell")
                                                             edit:Nil];
         [spec setProperty:bid forKey:@"bundleID"];
         [spec setProperty:bid forKey:@"key"];
