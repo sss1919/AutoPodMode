@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>enabled</key>
+	<true/>
+	<key>blacklist</key>
+	<array>
+		<string>com.ss.iphone.ugc.Aweme</string>
+		<string>com.ss.iphone.ugc.Aweme.lite</string>
+		<string>com.smile.gifmaker</string>
+	</array>
+</dict>
+</plist>

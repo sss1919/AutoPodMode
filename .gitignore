@@ -1,0 +1,10 @@
+.theos
+obj
+packages
+.DS_Store
+*.deb
+build.log
+*.xcuserstate
+build/
+DerivedData/
+*.dylib
