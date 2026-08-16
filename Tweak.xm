@@ -4,6 +4,17 @@
 #import <MediaRemote/MediaRemote.h>
 #import <objc/runtime.h>
 
+// Forward declarations for private classes
+@class MPNowPlayingInfoCenter;
+@interface MPNowPlayingInfoCenter : NSObject
++ (instancetype)defaultCenter;
+@property (nonatomic, retain) NSDictionary *nowPlayingInfo;
+@property (nonatomic, assign) NSInteger playbackState;
+@end
+
+// MediaRemote constants (not in public header)
+extern NSString *const kMRMediaRemoteNowPlayingInfoApplicationIdentifier;
+
 static NSString *const kAutoPodModeConfigFileName = @"com.sss1919.autopodmode.config.plist";
 static const NSTimeInterval kManualOverrideCooldown = 30.0; // 30秒保护期
 
@@ -17,7 +28,6 @@ static const NSTimeInterval kManualOverrideCooldown = 30.0; // 30秒保护期
 @property (nonatomic, assign) BOOL isDeviceSupported;
 @property (nonatomic, retain) id btDevice;
 @property (nonatomic, retain) NSNotificationCenter *notificationCenter;
-@property (nonatomic, retain) id outputDeviceContext;
 + (instancetype)sharedInstance;
 - (void)start;
 - (void)loadConfig;
@@ -63,14 +73,13 @@ static const NSTimeInterval kManualOverrideCooldown = 30.0; // 30秒保护期
 }
 
 - (NSString *)configPath {
-    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-    NSString *documentsDir = paths.firstObject;
-    // 使用共享目录：/var/mobile/Library/Preferences/ 实际位置由沙盒决定
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *sharedPrefDir = @"/var/mobile/Library/Preferences/";
     if ([fm fileExistsAtPath:sharedPrefDir]) {
         return [sharedPrefDir stringByAppendingPathComponent:kAutoPodModeConfigFileName];
     }
+    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    NSString *documentsDir = paths.firstObject;
     return [documentsDir stringByAppendingPathComponent:kAutoPodModeConfigFileName];
 }
 
@@ -79,7 +88,6 @@ static const NSTimeInterval kManualOverrideCooldown = 30.0; // 30秒保护期
     NSFileManager *fm = [NSFileManager defaultManager];
     
     if (![fm fileExistsAtPath:path]) {
-        // 配置文件不存在，使用默认值写入
         [self saveConfig];
         return;
     }
@@ -126,7 +134,6 @@ static const NSTimeInterval kManualOverrideCooldown = 30.0; // 30秒保护期
 - (void)start {
     [self loadConfig];
     
-    // 监听当前播放状态变化
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(nowPlayingInfoDidChange:)
                                                  name:@"MRNowPlayingPlaybackStateChangedNotification"
@@ -142,17 +149,14 @@ static const NSTimeInterval kManualOverrideCooldown = 30.0; // 30秒保护期
                                                  name:@"MRNowPlayingApplicationDidChangeNotification"
                                                object:nil];
     
-    // 监听输出设备变化（蓝牙连接/断开）
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(routeChanged:)
                                                  name:AVAudioSessionRouteChangeNotification
                                                object:[AVAudioSession sharedInstance]];
     
-    // 检测当前设备状态
     [self checkCurrentDevice];
     [self updateNowPlayingState];
     
-    // 启动配置文件监听
     NSTimeInterval refreshInterval = 5.0;
     [NSTimer scheduledTimerWithTimeInterval:refreshInterval
                                      target:self
@@ -188,32 +192,27 @@ static const NSTimeInterval kManualOverrideCooldown = 30.0; // 30秒保护期
 - (void)updateNowPlayingState {
     if (!self.tweakEnabled) return;
     
-    // 获取当前播放App的bundleID
     NSString *bundleID = [self getCurrentPlayingAppBundleID];
     self.currentPlayingAppBundleID = bundleID;
     
-    // 获取播放状态
     BOOL playing = [self getCurrentPlaybackState];
     BOOL stateChanged = (self.isPlaying != playing);
     self.isPlaying = playing;
     
-    // 检查黑名单
     if (bundleID && [self.blacklist containsObject:bundleID]) {
         NSLog(@"[AutoPodMode] App %@ is in blacklist, skipping", bundleID);
         return;
     }
     
-    // 检查设备是否支持
     if (!self.isDeviceSupported) {
-        NSLog(@"[AutoPodMode] Device not supported (wired or non-Pro/Max), skipping");
+        NSLog(@"[AutoPodMode] Device not supported, skipping");
         return;
     }
     
-    // 检查30秒保护期
     if (self.lastManualOverrideTime) {
         NSTimeInterval elapsed = -[self.lastManualOverrideTime timeIntervalSinceNow];
         if (elapsed < kManualOverrideCooldown) {
-            NSLog(@"[AutoPodMode] Manual override cooldown active (%.0fs remaining), skipping",
+            NSLog(@"[AutoPodMode] Manual override cooldown (%.0fs remaining), skipping",
                   kManualOverrideCooldown - elapsed);
             return;
         }
@@ -226,35 +225,31 @@ static const NSTimeInterval kManualOverrideCooldown = 30.0; // 30秒保护期
 }
 
 - (NSString *)getCurrentPlayingAppBundleID {
-    // 使用MediaRemote框架获取当前播放App
     @try {
-        // MRNowPlayingAppGetDisplayID or similar private API
-        // Fallback: try to get from NowPlayingInfoCenter
         Class MPNowPlayingInfoCenterClass = NSClassFromString(@"MPNowPlayingInfoCenter");
         if (MPNowPlayingInfoCenterClass) {
-            MPNowPlayingInfoCenter *center = [MPNowPlayingInfoCenterClass defaultCenter];
-            NSDictionary *info = center.nowPlayingInfo;
-            if (info) {
-                NSString *bid = info[@"MPNowPlayingInfoPropertyAppIdentifier"];
-                if (bid) return bid;
-                bid = info[@"appIdentifier"];
-                if (bid) return bid;
+            id center = [MPNowPlayingInfoCenterClass performSelector:@selector(defaultCenter)];
+            if (center) {
+                NSDictionary *info = [center performSelector:@selector(nowPlayingInfo)];
+                if (info) {
+                    NSString *bid = info[@"MPNowPlayingInfoPropertyAppIdentifier"];
+                    if (!bid) bid = info[@"appIdentifier"];
+                    if (!bid) bid = info[kMRMediaRemoteNowPlayingInfoApplicationIdentifier];
+                    if (bid) return bid;
+                }
             }
         }
         
-        // Try MRMediaRemoteGetNowPlayingInfo
-        if (MRMediaRemoteGetNowPlayingInfo != NULL) {
-            void (^handler)(CFDictionaryRef) = ^(CFDictionaryRef info) {
+        // Use MRMediaRemoteGetNowPlayingInfo async API
+        MRMediaRemoteGetNowPlayingInfo(dispatch_get_main_queue(), ^(CFDictionaryRef info) {
+            if (info) {
                 NSDictionary *dict = (__bridge NSDictionary *)info;
-                if (dict) {
-                    NSString *bid = dict[(__bridge NSString *)kMRMediaRemoteNowPlayingInfoApplicationIdentifier];
-                    if (bid) {
-                        self.currentPlayingAppBundleID = bid;
-                    }
+                NSString *bid = dict[kMRMediaRemoteNowPlayingInfoApplicationIdentifier];
+                if (bid) {
+                    self.currentPlayingAppBundleID = [bid copy];
                 }
-            };
-            MRMediaRemoteGetNowPlayingInfo(dispatch_get_main_queue(), handler);
-        }
+            }
+        });
     } @catch (NSException *e) {
         NSLog(@"[AutoPodMode] Exception getting playing app: %@", e);
     }
@@ -263,24 +258,10 @@ static const NSTimeInterval kManualOverrideCooldown = 30.0; // 30秒保护期
 
 - (BOOL)getCurrentPlaybackState {
     @try {
-        Class MPNowPlayingInfoCenterClass = NSClassFromString(@"MPNowPlayingInfoCenter");
-        if (MPNowPlayingInfoCenterClass) {
-            MPNowPlayingInfoCenter *center = [MPNowPlayingInfoCenterClass defaultCenter];
-            // playbackState property
-            if ([center respondsToSelector:@selector(playbackState)]) {
-                NSInteger state = (NSInteger)[center performSelector:@selector(playbackState)];
-                // MPNowPlayingPlaybackStatePlaying = 1
-                return (state == 1);
-            }
-        }
-        
-        // Try MRMediaRemoteGetNowPlayingApplicationPlaybackState
-        if (MRMediaRemoteGetNowPlayingApplicationPlaybackState != NULL) {
-            void (^handler)(NSInteger) = ^(NSInteger state) {
-                self.isPlaying = (state == 1);
-            };
-            MRMediaRemoteGetNowPlayingApplicationPlaybackState(dispatch_get_main_queue(), handler);
-        }
+        // Use MRMediaRemoteGetNowPlayingApplicationIsPlaying
+        MRMediaRemoteGetNowPlayingApplicationIsPlaying(dispatch_get_main_queue(), ^(Boolean isPlaying) {
+            self.isPlaying = (BOOL)isPlaying;
+        });
     } @catch (NSException *e) {
         NSLog(@"[AutoPodMode] Exception getting playback state: %@", e);
     }
@@ -289,7 +270,6 @@ static const NSTimeInterval kManualOverrideCooldown = 30.0; // 30秒保护期
 
 - (void)checkCurrentDevice {
     @try {
-        // 检查 AVAudioSession 输出端口类型
         AVAudioSession *session = [AVAudioSession sharedInstance];
         AVAudioSessionRouteDescription *route = session.currentRoute;
         NSArray *outputs = route.outputs;
@@ -303,19 +283,16 @@ static const NSTimeInterval kManualOverrideCooldown = 30.0; // 30秒保护期
             NSString *portType = port.portType;
             NSString *portName = port.portName;
             
-            // 有线耳机直接忽略
             if ([portType isEqualToString:AVAudioSessionPortHeadphones]) {
                 self.isDeviceSupported = NO;
                 NSLog(@"[AutoPodMode] Wired headphones detected, skipping");
                 return;
             }
             
-            // 蓝牙设备检查
             if ([portType isEqualToString:AVAudioSessionPortBluetoothA2DP] ||
                 [portType isEqualToString:AVAudioSessionPortBluetoothHFP] ||
                 [portType isEqualToString:AVAudioSessionPortBluetoothLE]) {
                 
-                // 通过设备名判断是否是 AirPods Pro / AirPods Max
                 NSString *lowerName = portName.lowercaseString;
                 BOOL isAirPodsPro = [lowerName containsString:@"airpods pro"];
                 BOOL isAirPodsMax = [lowerName containsString:@"airpods max"];
@@ -331,7 +308,6 @@ static const NSTimeInterval kManualOverrideCooldown = 30.0; // 30秒保护期
             }
         }
         
-        // 监听蓝牙设备聆听模式变化（用户手动切换）
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(listeningModeChanged:)
                                                      name:@"AVAudioSessionBluetoothDeviceListeningModeChangedNotification"
@@ -346,7 +322,6 @@ static const NSTimeInterval kManualOverrideCooldown = 30.0; // 30秒保护期
     @try {
         NSDictionary *userInfo = note.userInfo;
         NSLog(@"[AutoPodMode] Listening mode changed manually: %@", userInfo);
-        // 用户手动修改了，记录保护期开始时间
         self.lastManualOverrideTime = [NSDate date];
     } @catch (NSException *e) {
         NSLog(@"[AutoPodMode] Exception in listeningModeChanged: %@", e);
@@ -358,40 +333,34 @@ static const NSTimeInterval kManualOverrideCooldown = 30.0; // 30秒保护期
         NSInteger targetMode = -1;
         // 降噪模式 = 1 (noise cancellation)
         // 通透模式 = 2 (transparency)
-        // 关闭/自适应 = 0 (off/auto)
         
         if (playing) {
-            // 播放中：降噪模式
             targetMode = 1;
             NSLog(@"[AutoPodMode] Media playing, setting ANC mode");
         } else {
-            // 暂停：通透模式
             targetMode = 2;
             NSLog(@"[AutoPodMode] Media paused, setting transparency mode");
         }
         
-        // 如果当前已经是目标模式，跳过
         if (self.currentListeningMode == targetMode) {
             return;
         }
         
-        // 尝试通过 AVAudioSession 设置蓝牙设备聆听模式
         AVAudioSession *session = [AVAudioSession sharedInstance];
-        NSArray *availableModes = nil;
         NSNumber *currentMode = nil;
         
-        // Private API: 获取可用聆听模式
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
         if ([session respondsToSelector:@selector(currentBluetoothListeningMode)]) {
             currentMode = [session performSelector:@selector(currentBluetoothListeningMode)];
             self.currentListeningMode = [currentMode integerValue];
         }
+#pragma clang diagnostic pop
         
         if (self.currentListeningMode == targetMode) {
             return;
         }
         
-        // 尝试设置聆听模式
-        // -[AVAudioSession setBluetoothListeningMode:error:] 私有 API
         SEL setModeSel = NSSelectorFromString(@"setBluetoothListeningMode:error:");
         if ([session respondsToSelector:setModeSel]) {
             NSNumber *modeNum = @(targetMode);
@@ -412,7 +381,6 @@ static const NSTimeInterval kManualOverrideCooldown = 30.0; // 30秒保护期
                 NSLog(@"[AutoPodMode] Successfully set listening mode to: %ld", (long)targetMode);
             } else {
                 NSLog(@"[AutoPodMode] Failed to set listening mode: %@", error);
-                // Fallback: 使用私有 BluetoothManager 框架
                 [self setBluetoothModeFallback:targetMode];
             }
         } else {
@@ -426,34 +394,40 @@ static const NSTimeInterval kManualOverrideCooldown = 30.0; // 30秒保护期
 
 - (void)setBluetoothModeFallback:(NSInteger)mode {
     @try {
-        // BluetoothManager 私有框架方式
-        // 注意：这个在不同iOS版本变化较大，尽力尝试
         Class btClass = NSClassFromString(@"BluetoothManager");
         if (!btClass) return;
         
-        id btManager = [btClass sharedInstance];
+        id btManager = [btClass performSelector:@selector(sharedInstance)];
         if (!btManager) return;
         
         NSArray *connectedDevices = nil;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
         if ([btManager respondsToSelector:@selector(connectedDevices)]) {
             connectedDevices = [btManager performSelector:@selector(connectedDevices)];
         }
+#pragma clang diagnostic pop
         
         for (id device in connectedDevices) {
             NSString *name = nil;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
             if ([device respondsToSelector:@selector(name)]) {
                 name = [device performSelector:@selector(name)];
             }
+#pragma clang diagnostic pop
             NSString *lowerName = name.lowercaseString;
             if (!([lowerName containsString:@"airpods pro"] || [lowerName containsString:@"airpods max"])) {
                 continue;
             }
             
-            // 尝试设置聆听模式
             SEL setANC = NSSelectorFromString(@"setActiveNoiseReductionMode:");
             if ([device respondsToSelector:setANC]) {
                 NSNumber *modeNum = @(mode);
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
                 [device performSelector:setANC withObject:modeNum];
+#pragma clang diagnostic pop
                 self.currentListeningMode = mode;
                 NSLog(@"[AutoPodMode] Set ANC mode via BluetoothManager fallback: %ld", (long)mode);
             }
@@ -465,13 +439,10 @@ static const NSTimeInterval kManualOverrideCooldown = 30.0; // 30秒保护期
 
 @end
 
-// 构造函数：Tweak 加载时执行
 __attribute__((constructor))
 static void initialize() {
     @autoreleasepool {
         NSLog(@"[AutoPodMode] Tweak loading in mediaremoted process");
-        
-        // 延迟启动，确保进程初始化完成
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [[AutoPodModeManager sharedInstance] start];
