@@ -71,17 +71,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-theos-roothide-v3-
 
-      - name: Install Theos (roothide fork) + toolchain + SDKs
+      - name: Install Theos + toolchain + SDKs
         if: steps.cache-theos.outputs.cache-hit != 'true'
         run: |
-          # Use roothide-dev/Theos for rootless-roothide packaging scheme support
-          git clone --recursive --depth 1 https://github.com/roothide-dev/theos.git "${THEOS}"
-          echo "Cloned roothide-dev/Theos"
+          # Use official theos/theos (supports rootless scheme)
+          git clone --recursive https://github.com/theos/theos.git "${THEOS}"
+          echo "Cloned theos/theos"
 
           # Theos Linux toolchain (clang for arm64e cross-compilation)
-          # The official install script downloads the toolchain automatically
           echo "Running Theos bootstrap (downloads Linux toolchain)..."
-          bash "${THEOS}/bin/install-theos.sh" --auto 2>&1 | tail -20 || true
+          bash "${THEOS}/bin/install-theos.sh" --auto 2>&1 | tail -30 || true
 
           # Clone SDKs into theos/sdks
           mkdir -p "${THEOS}/sdks"
