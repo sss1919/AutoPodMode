@@ -41,15 +41,24 @@ jobs:
             sudo \
             fakeroot \
             dpkg-dev \
-            ldid \
             rsync \
             perl \
             python3 \
             ca-certificates \
             xz-utils \
             unzip \
-            zip
-          echo "Dependencies installed"
+            zip \
+            libplist-dev \
+            libssl-dev \
+            zlib1g-dev
+          # ldid is not in Ubuntu repos; build from source
+          git clone --depth 1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid
+          cd /tmp/ldid
+          make -j$(nproc)
+          sudo cp ldid /usr/local/bin/ldid
+          sudo chmod +x /usr/local/bin/ldid
+          ldid 2>&1 | head -3 || true
+          echo "Dependencies + ldid installed"
           uname -a
 
       - name: Cache Theos + SDKs
