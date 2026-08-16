@@ -6,6 +6,12 @@
 	<string>com.sss1919.autopodmode.prefs</string>
 	<key>cell</key>
 	<string>PSLinkCell</string>
+	<key>detail</key>
+	<string>AutoPodModePrefs.bundle</string>
+	<key>icon</key>
+	<string>AutoPodModePrefs.bundle/AutoPodMode.png</string>
+	<key>isContiguous</key>
+	<true/>
 	<key>label</key>
 	<string>AutoPodMode</string>
 </dict>

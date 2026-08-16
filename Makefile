@@ -11,7 +11,7 @@ TWEAK_NAME = AutoPodMode
 
 AutoPodMode_FILES = Tweak.xm
 AutoPodMode_FRAMEWORKS = Foundation UIKit AVFoundation
-AutoPodMode_PRIVATE_FRAMEWORKS = MediaRemote
+AutoPodMode_PRIVATE_FRAMEWORKS = MediaRemote BluetoothManager
 AutoPodMode_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-unused-variable
 
 SUBPROJECTS += Preferences
