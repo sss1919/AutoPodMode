@@ -8,9 +8,5 @@
 	<string>PSLinkCell</string>
 	<key>label</key>
 	<string>AutoPodMode</string>
-	<key>icon</key>
-	<string>icon.png</string>
-	<key>iconIsMask</key>
-	<true/>
 </dict>
 </plist>

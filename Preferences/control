@@ -1,9 +1,0 @@
-Package: com.sss1919.autopodmode.prefs
-Name: AutoPodMode Preferences
-Depends: preferenceloader
-Architecture: iphoneos-arm64e
-Description: AutoPodMode Settings Bundle
-Maintainer: sss1919
-Author: sss1919
-Section: Tweaks
-Version: 1.0.1

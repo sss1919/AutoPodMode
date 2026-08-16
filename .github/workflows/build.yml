@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     name: Build Rootless deb (arm64e)
 
     steps:
@@ -33,18 +33,9 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends \
-            build-essential fakeroot rsync curl perl zip git \
-            libxml2 libncurses-dev xz-utils ca-certificates \
-            dpkg-dev libssl-dev zlib1g-dev
-          # Build ldid from source (not in Ubuntu repos)
-          git clone --depth 1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid
-          cd /tmp/ldid && make -j$(nproc) && sudo cp ldid /usr/local/bin/ && sudo chmod +x /usr/local/bin/ldid
-          # Adjust fakeroot to favor sysv
-          sudo update-alternatives --set fakeroot /usr/bin/fakeroot-sysv 2>/dev/null || true
+          brew update
+          brew install ldid dpkg fakeroot
           echo "Dependencies installed"
-          uname -a
 
       - name: Cache Theos + toolchain + SDKs
         id: cache-theos
@@ -52,9 +43,9 @@ jobs:
         with:
           path: |
             ${{ env.THEOS }}
-          key: ${{ runner.os }}-theos-v6-${{ hashFiles('Makefile') }}
+          key: macos-theos-v7-${{ hashFiles('Makefile') }}
           restore-keys: |
-            ${{ runner.os }}-theos-v6-
+            macos-theos-v7-
 
       - name: Install Theos
         if: steps.cache-theos.outputs.cache-hit != 'true'
@@ -62,14 +53,13 @@ jobs:
           git clone --recursive https://github.com/theos/theos.git "${THEOS}"
           echo "Cloned theos/theos"
 
-          # Download iOS toolchain (from L1ghtmann/llvm-project)
+          # Download iOS toolchain (macOS host)
           echo "Downloading iOS toolchain..."
-          ARCH=$(uname -m)
           mkdir -p "${THEOS}/toolchain"
-          curl -fsSL "https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-${ARCH}.tar.xz" \
+          curl -fsSL "https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-macOS.tar.xz" \
             | tar -xJvf - -C "${THEOS}/toolchain/"
           echo "Toolchain installed:"
-          ls -la "${THEOS}/toolchain/linux/iphone/bin/" 2>/dev/null || ls -R "${THEOS}/toolchain/" | head -30
+          ls -la "${THEOS}/toolchain/macosx/iphone/bin/" 2>/dev/null || ls -R "${THEOS}/toolchain/" | head -30
 
           # Clone SDKs
           mkdir -p "${THEOS}/sdks"
@@ -88,7 +78,7 @@ jobs:
           echo "=== SDKs ==="
           ls "${THEOS}/sdks"
           echo "=== Toolchain ==="
-          ls "${THEOS}/toolchain/linux/iphone/bin/" 2>/dev/null || { echo "Toolchain not found!"; find "${THEOS}/toolchain" -name "clang" -type f; }
+          ls "${THEOS}/toolchain/macosx/iphone/bin/" 2>/dev/null || { echo "Toolchain not found!"; find "${THEOS}/toolchain" -name "clang" -type f; }
           if [ ! -d "${THEOS}/sdks/iPhoneOS16.5.sdk" ]; then
             echo "::error::iPhoneOS16.5.sdk not found!"
             exit 1
@@ -119,21 +109,90 @@ jobs:
             exit 1
           fi
 
-          # Collect artifacts
+      - name: Verify & fix rootless structure
+        id: verify-fix
+        run: |
           mkdir -p "${DEB_REDIST}"
-          shopt -s nullglob
-          DEBS=(${GITHUB_WORKSPACE}/packages/*.deb)
-          if [ "${#DEBS[@]}" -gt 0 ]; then
-            for deb in "${DEBS[@]}"; do
-              bn=$(basename "$deb")
-              newname="${bn%.deb}_rootless_arm64e.deb"
-              cp -v "$deb" "${DEB_REDIST}/${newname}"
-            done
-          else
+          DEBS=$(find "${GITHUB_WORKSPACE}/packages" -maxdepth 1 -name "*.deb" 2>/dev/null)
+          if [ -z "$DEBS" ]; then
             echo "::warning::No .deb packages found"
             find . -name "*.deb" -ls
+            exit 0
           fi
-          echo "=== Artifacts ==="
+
+          for deb in $DEBS; do
+            bn=$(basename "$deb")
+            tmpdir=$(mktemp -d)
+
+            cd "$tmpdir"
+            ar x "$deb"
+
+            if [ ! -f "data.tar.gz" ] && [ ! -f "data.tar" ]; then
+              echo "::error::No data archive found in $bn"
+              cd /
+              rm -rf "$tmpdir"
+              continue
+            fi
+
+            mkdir -p data_extract
+            cd data_extract
+            if [ -f "../data.tar.gz" ]; then
+              tar xzf "../data.tar.gz"
+            elif [ -f "../data.tar" ]; then
+              tar xf "../data.tar"
+            fi
+
+            echo "=== File paths in $bn ==="
+            find . -not -name '.' -not -name 'var' -not -name 'jb' | head -30
+
+            # Count rootless paths (under var/jb/) vs roothide paths
+            ROOTLESS_COUNT=$(find . -path "./var/jb/*" 2>/dev/null | wc -l)
+            # Roohide paths: any file NOT under var/jb/ and NOT the var/jb directories themselves
+            ROOTHIDE_COUNT=$(find . -not -path './var/*' -not -path './var' -not -path './var/jb/*' -not -path './var/jb' -not -name '.' 2>/dev/null | wc -l)
+
+            echo "Rootless paths (var/jb): $ROOTLESS_COUNT"
+            echo "Roothide paths (other): $ROOTHIDE_COUNT"
+
+            if [ "$ROOTLESS_COUNT" -gt 0 ] && [ "$ROOTHIDE_COUNT" -eq 0 ]; then
+              echo "✅ Package is already rootless"
+              cp "$deb" "${DEB_REDIST}/${bn%.deb}_rootless_arm64e.deb"
+            else
+              echo "⚠️  Package needs rootless conversion, fixing..."
+
+              mkdir -p var/jb
+              for dir in Library usr bin etc tmp; do
+                if [ -d "$dir" ]; then
+                  if [ -d "var/jb/$dir" ]; then
+                    echo "  Merging $dir into var/jb/$dir"
+                    cp -R "$dir"/* "var/jb/$dir/" 2>/dev/null || true
+                    rm -rf "$dir"
+                  else
+                    echo "  Moving $dir -> var/jb/$dir"
+                    mv "$dir" var/jb/
+                  fi
+                fi
+              done
+
+              echo "=== Fixed file paths ==="
+              find . -not -name '.' | head -30
+
+              cd "$tmpdir/data_extract"
+              tar czf ../data.tar.gz ./*
+              cd "$tmpdir"
+
+              rm -f data.tar
+
+              FIXED_DEB="${DEB_REDIST}/${bn%.deb}_rootless_arm64e.deb"
+              ar r "$FIXED_DEB" debian-binary control.tar.gz data.tar.gz
+
+              echo "✅ Fixed package created: $FIXED_DEB"
+            fi
+
+            cd /
+            rm -rf "$tmpdir"
+          done
+
+          echo "=== Final artifacts ==="
           ls -la "${DEB_REDIST}"
 
       - name: Upload build artifacts
