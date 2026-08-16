@@ -19,6 +19,6 @@
 	<key>CFBundleVersion</key>
 	<string>1.0.0</string>
 	<key>NSPrincipalClass</key>
-	<string>PSListController</string>
+	<string>PSViewController</string>
 </dict>
 </plist>
