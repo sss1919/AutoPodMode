@@ -2,6 +2,12 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
+// PSSpecifier private methods
+@interface PSSpecifier (Private)
++ (instancetype)groupSpecifier;
+- (void)setName:(NSString *)name;
+@end
+
 static NSString *const kAutoPodModeConfigFileName = @"com.sss1919.autopodmode.config.plist";
 
 // LSApplicationWorkspace / LSApplicationProxy private interface
@@ -176,7 +182,7 @@ static NSString *const kAutoPodModeConfigFileName = @"com.sss1919.autopodmode.co
         [self.appList sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
             NSString *nameA = a[@"name"] ?: a[@"bundleID"];
             NSString *nameB = b[@"name"] ?: b[@"bundleID"];
-            return [nameA.localizedCaseInsensitiveCompare compare:nameB.localizedCaseInsensitiveCompare];
+            return [nameA localizedCaseInsensitiveCompare:nameB];
         }];
         
     } @catch (NSException *e) {
@@ -189,10 +195,9 @@ static NSString *const kAutoPodModeConfigFileName = @"com.sss1919.autopodmode.co
         NSMutableArray *specs = [NSMutableArray array];
         
         // 标题组
-        PSSpecifier *headerGroup = [PSSpecifier specifierWithProperty:nil];
-        headerGroup.name = @"AutoPodMode";
-        [headerGroup setProperty:@"PSGroupSpecifier" forKey:@"cellClass"];
+        PSSpecifier *headerGroup = [PSSpecifier groupSpecifier];
         [headerGroup setProperty:@"AirPods Pro/Max 自动切换聆听模式" forKey:@"footerText"];
+        [headerGroup setName:@"AutoPodMode"];
         [specs addObject:headerGroup];
         
         // 总开关
@@ -203,12 +208,11 @@ static NSString *const kAutoPodModeConfigFileName = @"com.sss1919.autopodmode.co
                                                                    detail:nil
                                                                      cell:PSSwitchCell
                                                                      edit:nil];
-        [enabledSpec setProperty:@"启用后，媒体播放时自动降噪，暂停时自动通透" forKey:@"detail"];
+        [enabledSpec setProperty:@"启用后，媒体播放时自动降噪，暂停时自动通透" forKey:@"footerText"];
         [specs addObject:enabledSpec];
         
         // 黑名单说明组
-        PSSpecifier *infoGroup = [PSSpecifier specifierWithProperty:nil];
-        [infoGroup setProperty:@"PSGroupSpecifier" forKey:@"cellClass"];
+        PSSpecifier *infoGroup = [PSSpecifier groupSpecifier];
         [infoGroup setProperty:@"黑名单应用不会触发自动模式切换。以下应用默认已加入（抖音、抖音极速版、快手）。"
                           forKey:@"footerText"];
         [specs addObject:infoGroup];
@@ -221,13 +225,12 @@ static NSString *const kAutoPodModeConfigFileName = @"com.sss1919.autopodmode.co
                                                                  detail:nil
                                                                    cell:PSButtonCell
                                                                    edit:nil];
-        [resetSpec setProperty:@selector(resetBlacklist) forKey:@"action"];
+        [resetSpec setProperty:NSStringFromSelector(@selector(resetBlacklist)) forKey:@"action"];
         [resetSpec setProperty:[UIColor systemRedColor] forKey:@"cellTintColor"];
         [specs addObject:resetSpec];
         
         // App列表组标题
-        PSSpecifier *appGroup = [PSSpecifier specifierWithProperty:nil];
-        [appGroup setProperty:@"PSGroupSpecifier" forKey:@"cellClass"];
+        PSSpecifier *appGroup = [PSSpecifier groupSpecifier];
         [appGroup setProperty:[NSString stringWithFormat:@"已安装应用（共%lu个）", (unsigned long)self.appList.count]
                         forKey:@"headerText"];
         [appGroup setProperty:@"勾选加入黑名单，不触发自动模式切换" forKey:@"footerText"];
@@ -237,36 +240,28 @@ static NSString *const kAutoPodModeConfigFileName = @"com.sss1919.autopodmode.co
         for (NSDictionary *appInfo in self.appList) {
             NSString *bid = appInfo[@"bundleID"];
             NSString *name = appInfo[@"name"] ?: bid;
-            BOOL isBlacklisted = [self.blacklist containsObject:bid];
             
             PSSpecifier *appSpec = [PSSpecifier preferenceSpecifierNamed:name
                                                                    target:self
                                                                       set:@selector(setAppBlacklist:specifier:)
                                                                       get:@selector(appIsBlacklisted:)
                                                                    detail:nil
-                                                                     cell:PSMultiValueCell
+                                                                     cell:PSTitleValueCell
                                                                      edit:nil];
             [appSpec setProperty:bid forKey:@"bundleID"];
             [appSpec setProperty:bid forKey:@"key"];
-            [appSpec setProperty:@(isBlacklisted) forKey:@"defaultValue"];
             [appSpec setProperty:name forKey:@"label"];
             
-            // 设置App图标
             UIImage *icon = appInfo[@"icon"];
             if (icon) {
                 [appSpec setProperty:icon forKey:@"iconImage"];
             }
             
-            // 使用CheckmarkCell样式
-            [appSpec setProperty:@"PSCheckmarkCell" forKey:@"cellClass"];
-            [appSpec setProperty:@"PSListItemCell" forKey:@"cellClass"];
-            
             [specs addObject:appSpec];
         }
         
         // 关于组
-        PSSpecifier *aboutGroup = [PSSpecifier specifierWithProperty:nil];
-        [aboutGroup setProperty:@"PSGroupSpecifier" forKey:@"cellClass"];
+        PSSpecifier *aboutGroup = [PSSpecifier groupSpecifier];
         [aboutGroup setProperty:@"AutoPodMode v1.0.0\nby sss1919" forKey:@"footerText"];
         [specs addObject:aboutGroup];
         
