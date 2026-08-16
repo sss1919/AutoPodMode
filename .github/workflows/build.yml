@@ -78,13 +78,18 @@ jobs:
           git clone --recursive https://github.com/theos/theos.git "${THEOS}"
           echo "Cloned theos/theos"
 
-          # Theos Linux toolchain (clang for arm64e cross-compilation)
-          echo "Running Theos bootstrap (downloads Linux toolchain)..."
-          bash "${THEOS}/bin/install-theos.sh" --auto 2>&1 | tail -30 || true
+          # Download Theos Linux toolchain (prebuilt clang for iOS cross-compilation)
+          echo "Downloading Theos Linux toolchain..."
+          mkdir -p "${THEOS}/toolchain/linux/iphone"
+          # The official toolchain from theos/toolchain releases
+          curl -fsSL "https://github.com/theos/toolchain/releases/latest/download/toolchain_linux_x86_64.tar.xz" -o /tmp/toolchain.tar.xz
+          tar -xf /tmp/toolchain.tar.xz -C "${THEOS}/toolchain/linux/iphone"
+          echo "Toolchain installed"
+          ls -la "${THEOS}/toolchain/linux/iphone/bin/" | head -20
 
           # Clone SDKs into theos/sdks
           mkdir -p "${THEOS}/sdks"
-          git clone --depth 1 https://github.com/theos/sdks.git /tmp/sdks 2>/dev/null || true
+          git clone --depth 1 https://github.com/theos/sdks.git /tmp/sdks
           for sdk in /tmp/sdks/iPhoneOS*.sdk; do
             if [ -d "$sdk" ]; then
               cp -R "$sdk" "${THEOS}/sdks/"
