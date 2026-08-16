@@ -9,9 +9,9 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = AutoPodMode
 
 AutoPodMode_FILES = Tweak.xm
-AutoPodMode_FRAMEWORKS = Foundation UIKit AVFoundation MediaRemote
-AutoPodMode_PRIVATE_FRAMEWORKS = MediaRemote Bluetooth
-AutoPodMode_CFLAGS = -fobjc-arc
+AutoPodMode_FRAMEWORKS = Foundation UIKit AVFoundation
+AutoPodMode_PRIVATE_FRAMEWORKS = MediaRemote
+AutoPodMode_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-unused-variable
 
 SUBPROJECTS += Preferences
 
