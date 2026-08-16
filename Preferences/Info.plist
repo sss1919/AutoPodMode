@@ -19,6 +19,6 @@
 	<key>CFBundleVersion</key>
 	<string>1.0.1</string>
 	<key>NSPrincipalClass</key>
-	<string>PSListController</string>
+	<string>APMPRootListController</string>
 </dict>
 </plist>
