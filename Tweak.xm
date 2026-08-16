@@ -12,8 +12,8 @@
 @property (nonatomic, assign) NSInteger playbackState;
 @end
 
-// MediaRemote constants (not in public header)
-extern NSString *const kMRMediaRemoteNowPlayingInfoApplicationIdentifier;
+// MediaRemote constant (not in public header, define as string literal)
+static NSString *const kMRMediaRemoteNowPlayingInfoApplicationIdentifier = @"MRMediaRemoteNowPlayingInfoApplicationIdentifier";
 
 static NSString *const kAutoPodModeConfigFileName = @"com.sss1919.autopodmode.config.plist";
 static const NSTimeInterval kManualOverrideCooldown = 30.0; // 30秒保护期
