@@ -37,7 +37,7 @@ jobs:
           sudo apt-get install -y -qq --no-install-recommends \
             build-essential fakeroot rsync curl perl zip git \
             libxml2 libncurses-dev xz-utils ca-certificates \
-            dpkg-dev libssl-dev zlib1g-dev
+            dpkg-dev libssl-dev zlib1g-dev libplist-dev
           # Build ldid from source (not in Ubuntu repos)
           git clone --depth 1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid
           cd /tmp/ldid && make -j$(nproc) && sudo cp ldid /usr/local/bin/ && sudo chmod +x /usr/local/bin/ldid
@@ -52,13 +52,14 @@ jobs:
         with:
           path: |
             ${{ env.THEOS }}
-          key: ubuntu-theos-v8-${{ hashFiles('Makefile') }}
+          key: ubuntu-theos-v9-${{ hashFiles('Makefile') }}
           restore-keys: |
-            ubuntu-theos-v8-
+            ubuntu-theos-v9-
 
       - name: Install Theos
         if: steps.cache-theos.outputs.cache-hit != 'true'
         run: |
+          rm -rf "${THEOS}"
           git clone --recursive https://github.com/theos/theos.git "${THEOS}"
           echo "Cloned theos/theos"
 
